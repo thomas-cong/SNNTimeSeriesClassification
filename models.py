@@ -19,5 +19,6 @@ class MLPClassifier(nn.Module):
     def forward(self, x):
         return self.net(x)
 
-def get_model(model_type = "mlp"):
+def get_model(model_type = "mlp", seq_len):
     if model_type = "mlp":
+        return MLPClassifier(seq_len)
