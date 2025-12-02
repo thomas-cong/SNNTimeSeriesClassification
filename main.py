@@ -22,9 +22,9 @@ def get_dataset(args):
         args.seq_len = train_data[0][0].shape[0]
         args.classes = 2
     elif args.dataset == "twopattern":
-        from TwoPatternDataset import TwoPatternDataset
-        train_data = TwoPatternDataset("/home/tcong13/949Final/TwoPatterns/TwoPatterns_TRAIN.tsv")
-        test_data = TwoPatternDataset("/home/tcong13/949Final/TwoPatterns/TwoPatterns_TEST.tsv")
+        from TwoPatternsDataset import TwoPatternsDataset
+        train_data = TwoPatternsDataset("/home/tcong13/949Final/TwoPatterns/TwoPatterns_TRAIN.tsv")
+        test_data = TwoPatternsDataset("/home/tcong13/949Final/TwoPatterns/TwoPatterns_TEST.tsv")
         args.seq_len = train_data[0][0].shape[0]
         args.classes = 4
     else:
@@ -43,20 +43,27 @@ def main():
     test_labels = torch.tensor([y for _, y in test])
     print("Train label counts:", torch.bincount(train_labels))
     print("Test label counts:", torch.bincount(test_labels))
+    class_counts = torch.bincount(train_labels)
+    class_weights = (class_counts.sum()/ class_counts).to(device)
+    loss_fn = nn.CrossEntropyLoss(weight = class_weights)
     train_loader = DataLoader(train, batch_size = args.batch_size)
     model = get_model(args)
     model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr = 0.001)
+
+    # train
     for epoch in range(args.epochs):
         for batch in train_loader:
             features, labels = batch
             features, labels = features.to(device), labels.to(device)
             predicted = model(features)
-            loss = nn.CrossEntropyLoss()(predicted, labels)
+            loss = loss_fn(predicted, labels)
             loss.backward()
             optimizer.step()
             optimizer.zero_grad()
         print("Epoch: {}, Loss: {}".format(epoch, loss.item()))
+
+    # test
     test_loader = DataLoader(test, batch_size = args.batch_size)
     all_preds = []
     all_labels = []
@@ -66,7 +73,7 @@ def main():
         features, labels = features.to(device), labels.to(device)
         with torch.no_grad():
             predicted = model(features)
-            loss = nn.CrossEntropyLoss()(predicted, labels)
+            loss = loss_fn(predicted, labels)
         test_losses.append(loss.item())
         preds_cls = torch.argmax(predicted, dim=1).cpu().numpy()
         labels_np = labels.cpu().numpy()

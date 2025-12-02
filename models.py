@@ -19,7 +19,7 @@ class MLPClassifier(nn.Module):
     def forward(self, x):
         return self.net(x)
 class TransformerClassifier(nn.Module):
-    def __init__(self, T, classes, d_model=64, nhead=4, num_layers=2, dim_feedforward=128, dropout=0.1):
+    def __init__(self, T, classes, d_model=128, nhead=4, num_layers=2, dim_feedforward=128, dropout=0.1):
         super().__init__()
         self.T = T
         self.d_model = d_model

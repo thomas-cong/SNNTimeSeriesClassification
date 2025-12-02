@@ -1,1 +1,1 @@
-python main.py --model transformer --dataset heartbeat --batch_size 32 --epochs 300
+python main.py --model mlp --dataset twopattern --batch_size 64 --epochs 300
