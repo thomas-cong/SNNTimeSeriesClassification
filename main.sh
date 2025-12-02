@@ -1,0 +1,1 @@
+python main.py --model transformer --dataset heartbeat --batch_size 32 --epochs 300
