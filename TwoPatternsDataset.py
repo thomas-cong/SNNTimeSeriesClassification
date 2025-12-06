@@ -11,7 +11,8 @@ class TwoPatternsDataset(Dataset):
     def __getitem__(self, idx):
         row = self.tsv.iloc[idx, 1:]
         label = self.tsv.iloc[idx, 0]
-        return torch.tensor(row.values, dtype=torch.float32), torch.tensor(label - 1, dtype=torch.long)
+        # Return shape (C, T) - where C=1, T=sequence length
+        return torch.tensor(row.values, dtype=torch.float32).unsqueeze(0), torch.tensor(label - 1, dtype=torch.long)
 
 if __name__ == "__main__":
     from torch.utils.data import DataLoader

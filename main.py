@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import argparse
-from models import get_model
 from torch.utils.data import DataLoader
 
 from sklearn.metrics import accuracy_score, balanced_accuracy_score
@@ -13,7 +12,19 @@ def parse_arguments():
     parser.add_argument("--batch_size", type = int, default = 32)
     parser.add_argument("--epochs", type = int, default = 300)
     return parser.parse_args()
-
+def get_model(args):
+    assert type(args.seq_len) == int, "Seq length has to be int"
+    assert type(args.classes) == int, "need integer classes"
+    if args.model == "mlp":
+        from models import MLPClassifier
+        return MLPClassifier(args.seq_len, args.classes)
+    elif args.model == "transformer":
+        from models import TransformerClassifier
+        return TransformerClassifier(args.seq_len, args.classes)
+    elif args.model == "lifreservoir":
+        from SNN import LIFReservoir
+        return None
+        
 def get_dataset(args):
     if args.dataset == "heartbeat":
         from BinaryHeartBeatDataset import BinaryHeartBeatDataset
@@ -25,14 +36,27 @@ def get_dataset(args):
         from TwoPatternsDataset import TwoPatternsDataset
         train_data = TwoPatternsDataset("/home/tcong13/949Final/TwoPatterns/TwoPatterns_TRAIN.tsv")
         test_data = TwoPatternsDataset("/home/tcong13/949Final/TwoPatterns/TwoPatterns_TEST.tsv")
-        args.seq_len = train_data[0][0].shape[0]
+        args.seq_len = train_data[0][0].shape[1]
         args.classes = 4
     else:
         raise ValueError("Unknown dataset: {}".format(args.dataset))
     return train_data, test_data
-
-def main():
-    args = parse_arguments()
+def encode_spikes(x, delta = 0.1):
+    # x shape is B, C, T
+    B, C, T = x.shape
+    
+    # Normalize along the time dimension
+    x_norm = (x - x.mean(dim=2, keepdim=True)) / (x.std(dim=2, keepdim=True) + 1e-8)
+    
+    # Calculate temporal difference
+    diff = torch.diff(x_norm, dim=2)
+    
+    # Create spike train based on threshold crossing
+    spikes = torch.zeros_like(x_norm)
+    spikes[:, :, 1:] = (torch.abs(diff) > delta).float()
+    
+    return spikes
+def main(args):
     print("Args: ", args)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device: ", device)
@@ -49,6 +73,7 @@ def main():
     train_loader = DataLoader(train, batch_size = args.batch_size)
     model = get_model(args)
     model.to(device)
+    print("Model:", model)
     optimizer = torch.optim.Adam(model.parameters(), lr = 0.001)
 
     # train
@@ -56,6 +81,8 @@ def main():
         for batch in train_loader:
             features, labels = batch
             features, labels = features.to(device), labels.to(device)
+            if "lif" in args.model:
+                features = encode_spikes(features)
             predicted = model(features)
             loss = loss_fn(predicted, labels)
             loss.backward()
@@ -71,6 +98,8 @@ def main():
     for batch in test_loader:
         features, labels = batch
         features, labels = features.to(device), labels.to(device)
+        if "lif" in args.model:
+            features = encode_spikes(features)
         with torch.no_grad():
             predicted = model(features)
             loss = loss_fn(predicted, labels)
@@ -83,8 +112,9 @@ def main():
     acc = accuracy_score(all_labels, all_preds)
     bal_acc = balanced_accuracy_score(all_labels, all_preds)
     print("Test Loss: {:.4f}, Accuracy: {:.4f}, Balanced Accuracy: {:.4f}".format(avg_test_loss, acc, bal_acc))
-
+    
 if __name__ == "__main__":
-    main()
+    args = parse_arguments()
+    main(args)
     
 

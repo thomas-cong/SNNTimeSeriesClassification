@@ -1,1 +1,1 @@
-python main.py --model transformer --dataset twopattern --batch_size 64 --epochs 20
+python main.py --model transformer --dataset twopattern --batch_size 64 --epochs 30

@@ -17,6 +17,10 @@ class MLPClassifier(nn.Module):
             nn.Linear(64, classes)
         )
     def forward(self, x):
+        # Input: (B, C, T) -> reshape to (B, T) for MLP
+        batch_size = x.shape[0]
+        # Reshape: flatten all channels into one dimension
+        x = x.view(batch_size, -1)
         return self.net(x)
 class TransformerClassifier(nn.Module):
     def __init__(self, T, classes, d_model=128, nhead=4, num_layers=2, dim_feedforward=128, dropout=0.1):
@@ -24,6 +28,7 @@ class TransformerClassifier(nn.Module):
         self.T = T
         self.d_model = d_model
 
+        # Updated to handle C channels
         self.input_proj = nn.Linear(1, d_model)
         self.pos_embedding = nn.Parameter(torch.randn(1, T, d_model))
 
@@ -38,8 +43,8 @@ class TransformerClassifier(nn.Module):
         self.cls = nn.Linear(d_model, classes)
 
     def forward(self, x):
-        # x: [batch, T]
-        x = x.unsqueeze(-1)                            # [batch, T, 1]
+        # x: [batch, C, T] -> transpose to [batch, T, C]
+        x = x.transpose(1, 2)                        # [batch, T, C]
         x = self.input_proj(x)                        # [batch, T, d_model]
         x = x + self.pos_embedding[:, :x.size(1), :]  # [batch, T, d_model]
         h = self.encoder(x)                           # [batch, T, d_model]

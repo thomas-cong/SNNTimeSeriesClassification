@@ -12,14 +12,15 @@ class BinaryHeartBeatDataset(Dataset):
         encoded = [row[:-1] + [1 if row[-1].strip().lower() == "abnormal" else 0] for row in data]
         # turn into a torch tensor
         data_tensor = torch.tensor(encoded, dtype=torch.float32)
-        self.features = data_tensor[:, :-1]
+        self.features = data_tensor[:, :-1]  # (B, T) shape
         self.labels = data_tensor[:, -1].long()  # or .float() if regression
 
     def __len__(self):
         return self.features.shape[0]
 
     def __getitem__(self, idx):
-        return self.features[idx], self.labels[idx]
+        # Return shape (C, T) - where C=1, T=sequence length
+        return self.features[idx].unsqueeze(0), self.labels[idx]
 
 if __name__ == "__main__":
     from torch.utils.data import DataLoader
@@ -29,4 +30,3 @@ if __name__ == "__main__":
     feature, label = next(iter(training_loader))
     print(f"Feature Shape {feature.shape}")
     print(f"Label Shape {label.shape}")
-    breakpoint()
