@@ -46,12 +46,4 @@ class TransformerClassifier(nn.Module):
         h = h.mean(dim=1)                             # [batch, d_model]
         out = self.cls(h)                             # [batch, classes]
         return out
-
-def get_model(args):
-    assert type(args.seq_len) == int, "Seq length has to be int"
-    assert type(args.classes) == int, "need integer classes"
-    if args.model == "mlp":
-        return MLPClassifier(args.seq_len, args.classes)
-    elif args.model == "transformer":
-        return TransformerClassifier(args.seq_len, args.classes)
         
