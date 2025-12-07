@@ -1,1 +1,1 @@
-python main.py --model transformer --dataset twopattern --batch_size 64 --epochs 30
+python main.py --model lifstatic --dataset twopattern --batch_size 64 --epochs 300

@@ -11,6 +11,7 @@ def parse_arguments():
     parser.add_argument("--dataset", type = str, default = "heartbeat")
     parser.add_argument("--batch_size", type = int, default = 32)
     parser.add_argument("--epochs", type = int, default = 300)
+    parser.add_argument("--freeze_reservoir", type = bool, default = True)
     return parser.parse_args()
 def get_model(args):
     assert type(args.seq_len) == int, "Seq length has to be int"
@@ -21,10 +22,10 @@ def get_model(args):
     elif args.model == "transformer":
         from models import TransformerClassifier
         return TransformerClassifier(args.seq_len, args.classes)
-    elif args.model == "lifreservoir":
-        from SNN import LIFReservoir
-        return None
-        
+    elif args.model == "lifstatic":
+        from models import StaticLIFReservoir
+        return StaticLIFReservoir(classes = args.classes)
+    raise ValueError(f"{args.model} not a valid model")
 def get_dataset(args):
     if args.dataset == "heartbeat":
         from BinaryHeartBeatDataset import BinaryHeartBeatDataset
@@ -41,19 +42,25 @@ def get_dataset(args):
     else:
         raise ValueError("Unknown dataset: {}".format(args.dataset))
     return train_data, test_data
-def encode_spikes(x, delta = 0.1):
-    # x shape is B, C, T
+def encode_spikes(x, threshold=0.2, tau_m=0.9, tau_s=0.5, refractory=3):
     B, C, T = x.shape
-    
-    # Normalize along the time dimension
     x_norm = (x - x.mean(dim=2, keepdim=True)) / (x.std(dim=2, keepdim=True) + 1e-8)
     
-    # Calculate temporal difference
-    diff = torch.diff(x_norm, dim=2)
+    membrane = torch.zeros(B, C, device=x.device)
+    spikes = torch.zeros(B, C, T, device=x.device)
+    refrac_count = torch.zeros(B, C, device=x.device)
     
-    # Create spike train based on threshold crossing
-    spikes = torch.zeros_like(x_norm)
-    spikes[:, :, 1:] = (torch.abs(diff) > delta).float()
+    for t in range(T):
+        membrane = tau_m * membrane
+        membrane += tau_s * x_norm[:, :, t]
+        
+        can_spike = refrac_count <= 0
+        is_spike = (membrane > threshold) & can_spike
+        
+        spikes[:, :, t] = is_spike.float()
+        membrane[is_spike] = 0.0
+        refrac_count[is_spike] = refractory
+        refrac_count = torch.clamp(refrac_count - 1, min=0)
     
     return spikes
 def main(args):

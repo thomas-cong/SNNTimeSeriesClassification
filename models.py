@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-
+from SNN import LIFReservoir
 
 class MLPClassifier(nn.Module):
     def __init__(self, T, classes):
@@ -52,3 +52,25 @@ class TransformerClassifier(nn.Module):
         out = self.cls(h)                             # [batch, classes]
         return out
         
+class StaticLIFReservoir(nn.Module):
+    def __init__(self, classes, reservoir_size = 200, data_channels = 1):
+        super().__init__()
+        self.reservoir = LIFReservoir(n_in = data_channels, n_reservoir = reservoir_size)
+        self.classifier = nn.Sequential(
+            nn.Linear(reservoir_size, 128),
+            nn.ReLU(),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, classes)
+        )
+    def forward(self, x):
+        B,C, T = x.shape
+        all_spikes = []
+        for t in range(T):
+            x_t = x[:,:,t] # move over channels simultaneously
+            spike_t = self.reservoir(x_t) # input as C, 1
+            all_spikes.append(spike_t)
+        post_spike = torch.stack(all_spikes, dim=1)  # [B, T, reservoir_size]
+        post_spike = torch.mean(post_spike, dim=1)  # [B, reservoir_size] mean pooling over time
+        predicted = self.classifier(post_spike)
+        return predicted
