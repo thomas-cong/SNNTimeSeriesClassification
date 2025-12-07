@@ -1,1 +1,1 @@
-python main.py --model lifstatic --dataset twopattern --batch_size 64 --epochs 300
+python main.py --model lifstdp --dataset twopattern --batch_size 1 --epochs 500

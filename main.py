@@ -1,7 +1,11 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import TensorDataset, DataLoader
+import matplotlib.pyplot as plt
+import numpy as np
 import argparse
-from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from sklearn.metrics import accuracy_score, balanced_accuracy_score
 
@@ -23,9 +27,15 @@ def get_model(args):
         from models import TransformerClassifier
         return TransformerClassifier(args.seq_len, args.classes)
     elif args.model == "lifstatic":
-        from models import StaticLIFReservoir
-        return StaticLIFReservoir(classes = args.classes)
-    raise ValueError(f"{args.model} not a valid model")
+        from models import ReservoirClassifier
+        from SNN import LIFReservoir
+        reservoir = LIFReservoir(n_in = 1, n_reservoir = 200)
+        return ReservoirClassifier(classes = args.classes, reservoir = reservoir)
+    elif args.model == "lifstdp":
+        from models import ReservoirClassifier
+        from SNN import STDPReservoir
+        reservoir = STDPReservoir(n_in = 1, n_reservoir = 200)
+        return ReservoirClassifier(classes = args.classes, reservoir = reservoir)
 def get_dataset(args):
     if args.dataset == "heartbeat":
         from BinaryHeartBeatDataset import BinaryHeartBeatDataset
@@ -63,8 +73,12 @@ def encode_spikes(x, threshold=0.2, tau_m=0.9, tau_s=0.5, refractory=3):
         refrac_count = torch.clamp(refrac_count - 1, min=0)
     
     return spikes
+
+
 def main(args):
     print("Args: ", args)
+    if "stdp" in args.model:
+        args.batch_size = 1 # stdp should only consider one sample at a time
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device: ", device)
     train, test = get_dataset(args)
@@ -85,7 +99,8 @@ def main(args):
 
     # train
     for epoch in range(args.epochs):
-        for batch in train_loader:
+        pbar = tqdm(train_loader)
+        for batch in pbar:
             features, labels = batch
             features, labels = features.to(device), labels.to(device)
             if "lif" in args.model:
