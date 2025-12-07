@@ -101,28 +101,50 @@ class LIFReservoir(nn.Module):
         # update state to reset to 0 if spiked
         return post_spikes
 class STDPReservoir(LIFReservoir):
-    def __init__(self, n_in, n_reservoir, tau_trace = 1e-3, dt=1e-3, v_th = 0.5, tau_mem = 1e-2, sparsity = 0.1, spectral_radius = 0.9):
+    def __init__(self, n_in, n_reservoir, tau_trace = 2e-2, dt=1e-3, v_th = 0.5, tau_mem = 1e-2, sparsity = 0.2, spectral_radius = 0.9, target_rate = 0.1, eta_ip = 1e-3, lateral_strength = 0.05):
         super().__init__(n_in, n_reservoir, dt, v_th, tau_mem, sparsity, spectral_radius)
         self.tau_trace = tau_trace
-        self.register_buffer("neuron_traces", torch.zeros(n_reservoir))
-    def stdp_update(self, learning_rate = 1e-4, a_plus = 0.1, a_minus = 0.12):
-        W_rec = self.W_rec.data
-        post_traces = self.neuron_traces.reshape(-1, 1)
-        pre_traces = self.neuron_traces.reshape(1, -1)
-        potentiation = a_plus * pre_traces * (1.0 - post_traces) # positive for presynaptic firing by earlier ones
-        depression = -a_minus * post_traces * (1.0 - pre_traces) # positive for postysynatpc firing by later ones
-        dW = learning_rate * (potentiation + depression) 
-        W_rec = W_rec + dW
-        W_rec = torch.clamp(W_rec, min = 0.0) # ensure something doesn't explode
-        # ensure spectral radius condition still made
-        eigenvalues = torch.linalg.eigvals(W_rec)
-        max_eigenvalue = torch.max(torch.abs(eigenvalues)).item()
-        if max_eigenvalue > 0:
-            # Scale to maintain desired spectral radius
-            W_rec = W_rec * (self.spectral_radius / max_eigenvalue)
-        self.W_rec.data = W_rec
-        return W_rec
-    def forward(self, pre_spikes):
+        self.target_rate = target_rate
+        self.eta_ip = eta_ip
+        self.lateral_strength = lateral_strength
+        self.register_buffer("pre_traces", torch.zeros(n_reservoir))
+        self.register_buffer("post_traces", torch.zeros(n_reservoir))
+        self.register_buffer("firing_rates", torch.zeros(n_reservoir))
+        self.register_buffer("rate_decay", torch.tensor(0.99))
+    def estimate_spectral_radius(self, W, n_iter=20):
+        v = torch.randn(W.shape[0], device=W.device)
+        for _ in range(n_iter):
+            v = W @ v
+            v = v / torch.norm(v)
+        return torch.norm(W @ v)
+    @torch.no_grad()
+    def stdp_update(self, post_spikes, learning_rate=5e-2, a_plus=0.2, a_minus=0.25, noise_std=1e-3):
+        W_rec = self.W_rec.clone()
+        post_spikes_col = post_spikes.reshape(-1, 1)
+        post_spikes_row = post_spikes.reshape(1, -1)
+        pre_traces = self.pre_traces.reshape(1, -1)
+        post_traces = self.post_traces.reshape(-1, 1)
+        potentiation = a_plus * pre_traces * post_spikes_col
+        depression = -a_minus * post_traces * post_spikes_row
+        dW = learning_rate * (potentiation + depression)
+        # weight competition: subtract mean change per postsynaptic neuron
+        dW = dW - dW.mean(dim=0, keepdim=True)
+        noise = noise_std * torch.randn_like(dW)
+        W_rec = W_rec + dW + noise
+        W_rec = torch.clamp(W_rec, min=-0.5, max=0.5)
+        rho = self.estimate_spectral_radius(W_rec)
+        if rho > 0:
+            W_rec *= self.spectral_radius / rho
+        self.W_rec.copy_(W_rec)
+    @torch.no_grad()
+    def intrinsic_plasticity(self, avg_spikes):
+        # update running firing rate estimate
+        self.firing_rates = self.rate_decay * self.firing_rates + (1 - self.rate_decay) * avg_spikes
+        # adjust thresholds: increase if firing too much, decrease if too little
+        rate_error = self.firing_rates - self.target_rate
+        self.v_th.data = torch.clamp(self.v_th + self.eta_ip * rate_error, min=0.1, max=1.0)
+
+    def forward(self, pre_spikes, use_stdp = False):
         batch_size = pre_spikes.shape[0]
         if self.v is None or self.v.shape[0] != batch_size:
             self.v = torch.zeros(batch_size, self.n_reservoir, device=pre_spikes.device)
@@ -138,14 +160,22 @@ class STDPReservoir(LIFReservoir):
         self.v = decay * self.v + (1 - decay) * I_total
         # check against spiking threshold
         post_spikes = (self.v >= self.v_th).float()
-        # Calculate trace decay factor
-        trace_decay = torch.exp(torch.tensor(-self.dt/self.tau_trace, device=pre_spikes.device))
-        # First decay existing traces
-        self.neuron_traces = self.neuron_traces * trace_decay
-        # Then set to 1 where neurons fired
-        self.neuron_traces = torch.where(post_spikes > 0, torch.ones_like(self.neuron_traces), self.neuron_traces)
+        # lateral inhibition: subtract global activity from membrane potential
+        global_activity = post_spikes.mean(dim=1, keepdim=True)
+        self.v = self.v - self.lateral_strength * global_activity
+        # calculate trace decay factor
+        trace_decay = torch.exp(torch.tensor(-self.dt / self.tau_trace, device=pre_spikes.device))
+        # pre-trace: previous post-trace (spikes from t-1 are presynaptic for current step)
+        self.pre_traces = self.post_traces * trace_decay
+        # post-trace: decay then set to 1 where neurons fired this step
+        avg_spikes = post_spikes.mean(dim=0)
+        self.post_traces = self.post_traces * trace_decay
+        self.post_traces = torch.where(avg_spikes > 0, torch.ones_like(self.post_traces), self.post_traces)
+        if use_stdp:
+            self.stdp_update(avg_spikes)
+            self.intrinsic_plasticity(avg_spikes)
+        # reset membrane potential where spiked
         self.v = self.v * (1.0 - post_spikes)
-        self.stdp_update()
         return post_spikes
 
 if __name__ == "__main__":

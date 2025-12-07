@@ -16,6 +16,7 @@ def parse_arguments():
     parser.add_argument("--batch_size", type = int, default = 32)
     parser.add_argument("--epochs", type = int, default = 300)
     parser.add_argument("--freeze_reservoir", type = bool, default = True)
+    parser.add_argument("--stdp_passes", type = int, default = 3)
     return parser.parse_args()
 def get_model(args):
     assert type(args.seq_len) == int, "Seq length has to be int"
@@ -26,15 +27,10 @@ def get_model(args):
     elif args.model == "transformer":
         from models import TransformerClassifier
         return TransformerClassifier(args.seq_len, args.classes)
-    elif args.model == "lifstatic":
-        from models import ReservoirClassifier
-        from SNN import LIFReservoir
-        reservoir = LIFReservoir(n_in = 1, n_reservoir = 200)
-        return ReservoirClassifier(classes = args.classes, reservoir = reservoir)
-    elif args.model == "lifstdp":
+    elif args.model == "lifstatic" or args.model == "lifstdp":
         from models import ReservoirClassifier
         from SNN import STDPReservoir
-        reservoir = STDPReservoir(n_in = 1, n_reservoir = 200)
+        reservoir = STDPReservoir(n_in = 10, n_reservoir = 200)  # 10 receptors per input channel
         return ReservoirClassifier(classes = args.classes, reservoir = reservoir)
 def get_dataset(args):
     if args.dataset == "heartbeat":
@@ -52,28 +48,52 @@ def get_dataset(args):
     else:
         raise ValueError("Unknown dataset: {}".format(args.dataset))
     return train_data, test_data
-def encode_spikes(x, threshold=0.2, tau_m=0.9, tau_s=0.5, refractory=3):
+def encode_spikes(x, n_receptors=10):
+    """Population encoding: Encode inputs using multiple receptors with different sensitivities"""
     B, C, T = x.shape
+    
+    # Normalize input to zero mean and unit variance
     x_norm = (x - x.mean(dim=2, keepdim=True)) / (x.std(dim=2, keepdim=True) + 1e-8)
     
-    membrane = torch.zeros(B, C, device=x.device)
-    spikes = torch.zeros(B, C, T, device=x.device)
-    refrac_count = torch.zeros(B, C, device=x.device)
+    # Create receptors with different tuning curves (-2 to 2 range)
+    receptors = torch.linspace(-2, 2, n_receptors).reshape(1, 1, 1, n_receptors).to(x.device)
+    
+    # Expand input for broadcasting
+    x_expanded = x_norm.unsqueeze(-1)  # [B, C, T, 1]
+    
+    # Calculate receptor responses using Gaussian tuning curves
+    variance = 0.4
+    responses = torch.exp(-(x_expanded - receptors)**2 / variance)  # [B, C, T, n_receptors]
+    
+    # Convert analog responses to spike trains
+    spikes = torch.zeros(B, C * n_receptors, T, device=x.device)
     
     for t in range(T):
-        membrane = tau_m * membrane
-        membrane += tau_s * x_norm[:, :, t]
+        # Generate spikes probabilistically based on receptor response
+        rand_samples = torch.rand(B, C, n_receptors, device=x.device)
+        spike_probs = responses[:, :, t, :] * 0.6
+        poisson_spikes = (rand_samples < spike_probs).float()
         
-        can_spike = refrac_count <= 0
-        is_spike = (membrane > threshold) & can_spike
-        
-        spikes[:, :, t] = is_spike.float()
-        membrane[is_spike] = 0.0
-        refrac_count[is_spike] = refractory
-        refrac_count = torch.clamp(refrac_count - 1, min=0)
+        # Reshape and assign
+        reshaped_spikes = poisson_spikes.reshape(B, C * n_receptors)
+        spikes[:, :, t] = reshaped_spikes
     
     return spikes
 
+def stdp_train(model, data, freeze = True):
+    device = next(model.parameters()).device
+    assert model.reservoir.stdp_update, "no STDP functionality available for the model"
+    print("Training model via STDP")
+    for batch in data:
+        features, labels = batch
+        features, labels = features.to(device), labels.to(device)
+        features = encode_spikes(features)
+        model(features, use_stdp = True)
+    if freeze:
+        for param in model.reservoir.parameters():
+            param.requires_grad = False
+        print("Model parameter require_grad: ", [f"{name}: {param.requires_grad}" for name, param in model.reservoir.named_parameters()])
+    return model
 
 def main(args):
     print("Args: ", args)
@@ -98,32 +118,49 @@ def main(args):
     optimizer = torch.optim.Adam(model.parameters(), lr = 0.001)
 
     # train
+    best_loss = float('inf')
+    best_state = None
     for epoch in range(args.epochs):
         pbar = tqdm(train_loader)
+        if epoch == 0 and "stdp" in args.model:
+            for i in range(args.stdp_passes):
+                model = stdp_train(model, pbar, freeze = (i == args.stdp_passes - 1))
+        epoch_losses = []
         for batch in pbar:
             features, labels = batch
             features, labels = features.to(device), labels.to(device)
             if "lif" in args.model:
                 features = encode_spikes(features)
-            predicted = model(features)
+            predicted = model(features, use_stdp = False)
             loss = loss_fn(predicted, labels)
             loss.backward()
             optimizer.step()
             optimizer.zero_grad()
-        print("Epoch: {}, Loss: {}".format(epoch, loss.item()))
+            epoch_losses.append(loss.item())
+        avg_loss = sum(epoch_losses) / len(epoch_losses)
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+            best_state = {k: v.clone() for k, v in model.state_dict().items()}
+        print("Epoch: {}, Loss: {:.4f}".format(epoch, avg_loss))
+
+    # load best checkpoint
+    if best_state is not None:
+        model.load_state_dict(best_state)
+        print("Loaded best checkpoint with loss: {:.4f}".format(best_loss))
 
     # test
     test_loader = DataLoader(test, batch_size = args.batch_size)
     all_preds = []
     all_labels = []
     test_losses = []
-    for batch in test_loader:
+    tpbar = tqdm(test_loader)
+    for batch in tpbar:
         features, labels = batch
         features, labels = features.to(device), labels.to(device)
         if "lif" in args.model:
             features = encode_spikes(features)
         with torch.no_grad():
-            predicted = model(features)
+            predicted = model(features, use_stdp = False)
             loss = loss_fn(predicted, labels)
         test_losses.append(loss.item())
         preds_cls = torch.argmax(predicted, dim=1).cpu().numpy()

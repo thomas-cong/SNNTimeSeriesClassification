@@ -57,18 +57,18 @@ class ReservoirClassifier(nn.Module):
         super().__init__()
         self.reservoir = reservoir
         self.classifier = nn.Sequential(
-            nn.Linear(reservoir_size, 128),
+            nn.Linear(self.reservoir.n_reservoir, 128),
             nn.ReLU(),
             nn.Linear(128, 64),
             nn.ReLU(),
             nn.Linear(64, classes)
         )
-    def forward(self, x):
+    def forward(self, x, use_stdp = False):
         B,C, T = x.shape
         all_spikes = []
         for t in range(T):
             x_t = x[:,:,t] # move over channels simultaneously
-            spike_t = self.reservoir(x_t) # input as C, 1
+            spike_t = self.reservoir(x_t, use_stdp = use_stdp) # input as C, 1
             all_spikes.append(spike_t)
         post_spike = torch.stack(all_spikes, dim=1)  # [B, T, reservoir_size]
         post_spike = torch.mean(post_spike, dim=1)  # [B, reservoir_size] mean pooling over time

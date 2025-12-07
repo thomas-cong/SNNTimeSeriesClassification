@@ -28,6 +28,50 @@ def generate_patterns():
     
     return pattern1, pattern2
 
+
+def evaluate_pattern_discrimination(reservoir, pattern1, pattern2, num_trials=10):
+    """Evaluate how well the reservoir discriminates between patterns"""
+    # Store responses to each pattern
+    responses1 = []
+    responses2 = []
+    
+    # Run patterns through reservoir multiple times to get stable response
+    for _ in range(num_trials):
+        # Reset reservoir state
+        reservoir.v = None
+        
+        # Get response to pattern 1
+        output1 = reservoir(pattern1).detach().cpu().numpy()
+        responses1.append(output1)
+        
+        # Reset reservoir state
+        reservoir.v = None
+        
+        # Get response to pattern 2
+        output2 = reservoir(pattern2).detach().cpu().numpy()
+        responses2.append(output2)
+    
+    # Average responses
+    avg_response1 = np.mean(np.array(responses1), axis=0)
+    avg_response2 = np.mean(np.array(responses2), axis=0)
+    
+    # Calculate discrimination score: how different are the responses?
+    # Higher = better discrimination between patterns
+    response_diff = np.abs(avg_response1 - avg_response2)
+    discrimination_score = np.mean(response_diff)
+    
+    # Calculate consistency score: how consistent are responses to same pattern?
+    consistency1 = np.mean([np.mean(np.abs(r - avg_response1)) for r in responses1])
+    consistency2 = np.mean([np.mean(np.abs(r - avg_response2)) for r in responses2])
+    consistency_score = 1.0 - (consistency1 + consistency2) / 2  # Higher is better
+    
+    return {
+        'discrimination_score': float(discrimination_score),
+        'consistency_score': float(consistency_score),
+        'avg_response1': avg_response1,
+        'avg_response2': avg_response2
+    }
+
 def visualize_stdp_evolution(output_path="stdp_evolution.mp4", num_frames=100, num_neurons=100, dpi=100):
     """
     Create a simple standalone visualization of STDP weight matrix evolution
