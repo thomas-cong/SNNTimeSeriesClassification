@@ -51,6 +51,7 @@ class LIFReservoir(nn.Module):
         self.n_in = n_in
         self.n_reservoir = n_reservoir  
         self.dt = dt
+        self.spectral_radius = spectral_radius
         self.v_th = nn.Parameter(
                         torch.rand(n_reservoir) * 0.2 + 0.2,
                         requires_grad=False
@@ -66,7 +67,6 @@ class LIFReservoir(nn.Module):
         mask = (torch.rand(n_reservoir, n_reservoir) < sparsity).float()
         # apply sparsity mask
         W_rec = W_rec * mask
-        
         # check that the weight matrix within reservoir doesn't cause explosion
         eigenvalues = torch.linalg.eigvals(W_rec)
         # check maximum eigenvalue
@@ -100,24 +100,53 @@ class LIFReservoir(nn.Module):
         self.v = self.v * (1.0 - post_spikes)
         # update state to reset to 0 if spiked
         return post_spikes
+class STDPReservoir(LIFReservoir):
+    def __init__(self, n_in, n_reservoir, tau_trace = 1e-3, dt=1e-3, v_th = 0.5, tau_mem = 1e-2, sparsity = 0.1, spectral_radius = 0.9):
+        super().__init__(n_in, n_reservoir, dt, v_th, tau_mem, sparsity, spectral_radius)
+        self.tau_trace = tau_trace
+        self.register_buffer("neuron_traces", torch.zeros(n_reservoir))
+    def stdp_update(self, learning_rate = 1e-4, a_plus = 0.1, a_minus = 0.12):
+        W_rec = self.W_rec.data
+        post_traces = self.neuron_traces.reshape(-1, 1)
+        pre_traces = self.neuron_traces.reshape(1, -1)
+        potentiation = a_plus * pre_traces * (1.0 - post_traces) # positive for presynaptic firing by earlier ones
+        depression = -a_minus * post_traces * (1.0 - pre_traces) # positive for postysynatpc firing by later ones
+        dW = learning_rate * (potentiation + depression) 
+        W_rec = W_rec + dW
+        W_rec = torch.clamp(W_rec, min = 0.0) # ensure something doesn't explode
+        # ensure spectral radius condition still made
+        eigenvalues = torch.linalg.eigvals(W_rec)
+        max_eigenvalue = torch.max(torch.abs(eigenvalues)).item()
+        if max_eigenvalue > 0:
+            # Scale to maintain desired spectral radius
+            W_rec = W_rec * (self.spectral_radius / max_eigenvalue)
+        self.W_rec.data = W_rec
+        return W_rec
+    def forward(self, pre_spikes):
+        batch_size = pre_spikes.shape[0]
+        if self.v is None or self.v.shape[0] != batch_size:
+            self.v = torch.zeros(batch_size, self.n_reservoir, device=pre_spikes.device)
+        # input current
+        I_in = pre_spikes @ self.W_in
+        # current within the reservoir
+        I_rec = self.v @ self.W_rec
+        # total current to each neuron
+        I_total = I_in + I_rec
+        # decay term in LIF equation
+        decay = torch.exp(torch.tensor(-self.dt / self.tau_mem, device=pre_spikes.device))
+        # apply LIF
+        self.v = decay * self.v + (1 - decay) * I_total
+        # check against spiking threshold
+        post_spikes = (self.v >= self.v_th).float()
+        # Calculate trace decay factor
+        trace_decay = torch.exp(torch.tensor(-self.dt/self.tau_trace, device=pre_spikes.device))
+        # First decay existing traces
+        self.neuron_traces = self.neuron_traces * trace_decay
+        # Then set to 1 where neurons fired
+        self.neuron_traces = torch.where(post_spikes > 0, torch.ones_like(self.neuron_traces), self.neuron_traces)
+        self.v = self.v * (1.0 - post_spikes)
+        self.stdp_update()
+        return post_spikes
+
 if __name__ == "__main__":
-    device = torch.device("cuda") if torch.cuda.is_available() else "cpu"
-    print(f"Running on: {device}")
-    
-    print("\n=== Testing LIFReservoir ===")
-    reservoir = LIFReservoir(n_in=1, n_reservoir=50, sparsity=0.2, spectral_radius=0.95).to(device)
-    T = 200
-    spike_train = torch.zeros(1, 1, device=device)
-    
-    print("\n--- Reservoir Simulation with Single Channel Spike Train ---")
-    for t in range(T):
-        if t % 20 == 0:
-            spike_train[0, 0] = 1.0
-        else:
-            spike_train[0, 0] = 0.0
-        
-        reservoir_output = reservoir(spike_train)
-        num_active = reservoir_output[0].sum().item()
-        
-        if t % 10 == 0 or spike_train[0, 0] == 1.0:
-            print(f"Time {t:3d}: Input spike: {spike_train[0, 0].item():.0f} | Active neurons: {num_active:2.0f}/{reservoir.n_reservoir} | Mean voltage: {reservoir.v[0].mean().item():.3f}")
+    pass
