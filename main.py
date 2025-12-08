@@ -51,33 +51,34 @@ def get_dataset(args):
 def encode_spikes(x, n_receptors=10):
     """Population encoding: Encode inputs using multiple receptors with different sensitivities"""
     B, C, T = x.shape
-    
+
     # Normalize input to zero mean and unit variance
     x_norm = (x - x.mean(dim=2, keepdim=True)) / (x.std(dim=2, keepdim=True) + 1e-8)
-    
+
+
     # Create receptors with different tuning curves (-2 to 2 range)
     receptors = torch.linspace(-2, 2, n_receptors).reshape(1, 1, 1, n_receptors).to(x.device)
-    
+
     # Expand input for broadcasting
     x_expanded = x_norm.unsqueeze(-1)  # [B, C, T, 1]
-    
+
     # Calculate receptor responses using Gaussian tuning curves
     variance = 0.4
     responses = torch.exp(-(x_expanded - receptors)**2 / variance)  # [B, C, T, n_receptors]
-    
+
     # Convert analog responses to spike trains
     spikes = torch.zeros(B, C * n_receptors, T, device=x.device)
-    
+
     for t in range(T):
         # Generate spikes probabilistically based on receptor response
         rand_samples = torch.rand(B, C, n_receptors, device=x.device)
         spike_probs = responses[:, :, t, :] * 0.6
         poisson_spikes = (rand_samples < spike_probs).float()
-        
+
         # Reshape and assign
         reshaped_spikes = poisson_spikes.reshape(B, C * n_receptors)
         spikes[:, :, t] = reshaped_spikes
-    
+
     return spikes
 
 def stdp_train(model, data, freeze = True):
@@ -94,6 +95,13 @@ def stdp_train(model, data, freeze = True):
             param.requires_grad = False
         print("Model parameter require_grad: ", [f"{name}: {param.requires_grad}" for name, param in model.reservoir.named_parameters()])
     return model
+
+
+def reset_snn_stats(model): #zeros out spike counts that has "spike_count"
+    for module in model.modules():
+        if hasattr(module, "spike_count"):
+            module.spike_count.zero_()
+
 
 def main(args):
     print("Args: ", args)
@@ -149,6 +157,9 @@ def main(args):
         print("Loaded best checkpoint with loss: {:.4f}".format(best_loss))
 
     # test
+    input_spike_total = 0.0
+    if "lif" in args.model: # counts input spikes and resets SNN stats
+        reset_snn_stats(model)
     test_loader = DataLoader(test, batch_size = args.batch_size)
     all_preds = []
     all_labels = []
@@ -159,6 +170,7 @@ def main(args):
         features, labels = features.to(device), labels.to(device)
         if "lif" in args.model:
             features = encode_spikes(features)
+            input_spike_total += features.sum().item() #counts input spikes for SNN models
         with torch.no_grad():
             predicted = model(features, use_stdp = False)
             loss = loss_fn(predicted, labels)
@@ -171,9 +183,66 @@ def main(args):
     acc = accuracy_score(all_labels, all_preds)
     bal_acc = balanced_accuracy_score(all_labels, all_preds)
     print("Test Loss: {:.4f}, Accuracy: {:.4f}, Balanced Accuracy: {:.4f}".format(avg_test_loss, acc, bal_acc))
-    
+
+    # SNN statistics
+    if args.model == "lifstatic":
+        n_test = len(test)
+        n_res = model.reservoir.n_reservoir
+        sparsity = model.reservoir.sparsity
+        total_res_spikes = model.reservoir.spike_count.item()
+
+        syn0ps_in = input_spike_total * n_res
+        syn0ps_rec = total_res_spikes * n_res * sparsity
+        syn0ps_total = syn0ps_in + syn0ps_rec
+        syn0ps_per_sample = syn0ps_total / n_test
+        print("SNN Statistics:")
+        print(f" Total input spikes: {input_spike_total:.2f}")
+        print(f" Total reservoir spikes: {total_res_spikes:.2f}")
+        print(f" Total synaptic operations: {syn0ps_total:.2f}")
+        print(f"Input spikes per sample: {input_spike_total / n_test:.2f}")
+        print(f"Reservoir spikes per sample: {total_res_spikes / n_test:.2f}")
+        print(f"SynOps per sample (total):{syn0ps_total / n_test:.2e}")
+        print(f" Synaptic operations per sample: {syn0ps_per_sample:.2f}")
+        T = args.seq_len
+        firing_rate = total_res_spikes / (n_test * n_res * (T))
+        print(f"Firing rate: {firing_rate:.6f}")
+
+        mac_readout = (n_res * 128 + 128 * 64 + 64 * args.classes)
+        print(f"MACs for readout layer: {mac_readout}")
+        energy_snn_per_sample = mac_readout + 0.2 * syn0ps_per_sample
+        print(f"Estimated energy per sample (in arbitrary units): {energy_snn_per_sample:.2f}")
+        energy_snn_per_accuracy = energy_snn_per_sample / acc
+        print(f"Estimated energy per accuracy (in arbitrary units): {energy_snn_per_accuracy:.2f}")
+
+
+        #MLP stats
+        if args.model == "mlp":
+            D = args.seq_len
+            mac_mlp = (D * 512 + 512 * 256 + 256 * 128 + 128 * 64 + 64 * args.classes)
+            print(f"MACs for MLP model: {mac_mlp}")
+            energy_mlp_per_sample = mac_mlp
+            print(f"Estimated energy per sample for MLP (in arbitrary units): {energy_mlp_per_sample:.2f}")
+            energy_mlp_per_accuracy = energy_mlp_per_sample / acc
+            print(f"Estimated energy per accuracy for MLP (in arbitrary units): {energy_mlp_per_accuracy:.2f}")
+
+        #transformer stats
+        if args.model == "transformer":
+            T_seq = args.seq_len
+            d_model = 128
+            dim_feedforward = 128
+            num_layers = 2
+            mac_layer = (3*T_seq*d_model*d_model + 2*T_seq * T_seq*d_model + T_seq*d_model*d_model + 2*dim_feedforward*d_model)
+            mac_input_project = T_seq * 1 * d_model
+            mac_classifier = d_model * args.classes
+            mac_transformer = num_layers * mac_layer + mac_input_project + mac_classifier
+            print(f"MACs for Transformer model: {mac_transformer}")
+            energy_transformer_per_sample = mac_transformer
+            print(f"Estimated energy per sample for Transformer (in arbitrary units): {energy_transformer_per_sample:.2f}")
+            energy_transformer_per_accuracy = energy_transformer_per_sample / acc
+            print(f"Estimated energy per accuracy for Transformer (in arbitrary units): {energy_transformer_per_accuracy:.2f}")
+
+
+
 if __name__ == "__main__":
     args = parse_arguments()
     main(args)
-    
-

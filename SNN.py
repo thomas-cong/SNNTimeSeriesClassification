@@ -58,6 +58,7 @@ class LIFReservoir(nn.Module):
                     ) # initialize random thresholds for each of the neurons
         self.tau_mem = tau_mem
         self.sparsity = sparsity #storing sparsity and spike count
+        self.register_buffer("spike_count", torch.tensor(0.0), persistent=False) # for logging number of spikes
         # input to reservoir weight
         # no grad since fixed
         self.W_in = nn.Parameter(torch.randn(n_in, n_reservoir) * 0.8, requires_grad=False)
@@ -68,10 +69,7 @@ class LIFReservoir(nn.Module):
         mask = (torch.rand(n_reservoir, n_reservoir) < sparsity).float()
         # apply sparsity mask
         W_rec = W_rec * mask
-<<<<<<< HEAD
-=======
 
->>>>>>> 4711e74 (implemented so that reservoir can keep track of number of spikes)
         # check that the weight matrix within reservoir doesn't cause explosion
         eigenvalues = torch.linalg.eigvals(W_rec)
         # check maximum eigenvalue
@@ -84,7 +82,7 @@ class LIFReservoir(nn.Module):
         # state vector
         self.register_buffer("v", None)
         self.register_buffer("I_bias", 0.05 * torch.randn(n_reservoir)) # add a slight random bias
-        self.register_buffer("spike_count", torch.tensor(0.0), persistent=False) # for logging number of spikes
+
 
     def forward(self, pre_spikes):
         batch_size = pre_spikes.shape[0]
@@ -103,9 +101,11 @@ class LIFReservoir(nn.Module):
         self.v = decay * self.v + (1 - decay) * I_total
         # check against spiking threshold
         post_spikes = (self.v >= self.v_th).float()
+
         self.v = self.v * (1.0 - post_spikes)
-        # update state to reset to 0 if spiked
         self.spike_count += post_spikes.detach().sum() #logging number of spikes
+        # update state to reset to 0 if spiked
+
         return post_spikes
 class STDPReservoir(LIFReservoir):
     def __init__(self, n_in, n_reservoir, tau_trace = 2e-2, dt=1e-3, v_th = 0.5, tau_mem = 1e-2, sparsity = 0.2, spectral_radius = 0.9, target_rate = 0.1, eta_ip = 1e-3, lateral_strength = 0.05):
@@ -186,9 +186,7 @@ class STDPReservoir(LIFReservoir):
         return post_spikes
 
 if __name__ == "__main__":
-<<<<<<< HEAD
-    pass
-=======
+
     device = torch.device("cuda") if torch.cuda.is_available() else "cpu"
     print(f"Running on: {device}")
 
@@ -209,4 +207,3 @@ if __name__ == "__main__":
 
         if t % 10 == 0 or spike_train[0, 0] == 1.0:
             print(f"Time {t:3d}: Input spike: {spike_train[0, 0].item():.0f} | Active neurons: {num_active:2.0f}/{reservoir.n_reservoir} | Mean voltage: {reservoir.v[0].mean().item():.3f}")
->>>>>>> 4711e74 (implemented so that reservoir can keep track of number of spikes)
