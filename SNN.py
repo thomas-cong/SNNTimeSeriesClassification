@@ -178,9 +178,10 @@ class STDPReservoir(LIFReservoir):
         # pre-trace: previous post-trace (spikes from t-1 are presynaptic for current step)
         self.pre_traces = self.post_traces * trace_decay
         # post-trace: decay then set to 1 where neurons fired this step
-        avg_spikes = post_spikes.mean(dim=0)
+        avg_spikes = post_spikes.mean(dim=0) # only relevant if batch is > 0
         self.post_traces = self.post_traces * trace_decay
         self.post_traces = torch.where(avg_spikes > 0, torch.ones_like(self.post_traces), self.post_traces)
+        self.spike_count += post_spikes.detach().sum() #logging number of spikes
         if use_stdp:
             self.stdp_update(avg_spikes)
             self.intrinsic_plasticity(avg_spikes)

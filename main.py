@@ -221,30 +221,30 @@ def main(args):
 
 
         #MLP stats
-        if args.model == "mlp":
-            D = args.seq_len
-            mac_mlp = (D * 512 + 512 * 256 + 256 * 128 + 128 * 64 + 64 * args.classes)
-            print(f"MACs for MLP model: {mac_mlp}")
-            energy_mlp_per_sample = mac_mlp
-            print(f"Estimated energy per sample for MLP (in arbitrary units): {energy_mlp_per_sample:.2f}")
-            energy_mlp_per_accuracy = energy_mlp_per_sample / acc
-            print(f"Estimated energy per accuracy for MLP (in arbitrary units): {energy_mlp_per_accuracy:.2f}")
+    if args.model == "mlp":
+        D = args.seq_len
+        mac_mlp = (D * 512 + 512 * 256 + 256 * 128 + 128 * 64 + 64 * args.classes)
+        print(f"MACs for MLP model: {mac_mlp}")
+        energy_mlp_per_sample = mac_mlp
+        print(f"Estimated energy per sample for MLP (in arbitrary units): {energy_mlp_per_sample:.2f}")
+        energy_mlp_per_accuracy = energy_mlp_per_sample / acc
+        print(f"Estimated energy per accuracy for MLP (in arbitrary units): {energy_mlp_per_accuracy:.2f}")
 
         #transformer stats
-        if args.model == "transformer":
-            T_seq = args.seq_len
-            d_model = 128
-            dim_feedforward = 128
-            num_layers = 2
-            mac_layer = (3*T_seq*d_model*d_model + 2*T_seq * T_seq*d_model + T_seq*d_model*d_model + 2*dim_feedforward*d_model)
-            mac_input_project = T_seq * 1 * d_model
-            mac_classifier = d_model * args.classes
-            mac_transformer = num_layers * mac_layer + mac_input_project + mac_classifier
-            print(f"MACs for Transformer model: {mac_transformer}")
-            energy_transformer_per_sample = mac_transformer
-            print(f"Estimated energy per sample for Transformer (in arbitrary units): {energy_transformer_per_sample:.2f}")
-            energy_transformer_per_accuracy = energy_transformer_per_sample / acc
-            print(f"Estimated energy per accuracy for Transformer (in arbitrary units): {energy_transformer_per_accuracy:.2f}")
+    if args.model == "transformer":
+        T_seq = args.seq_len
+        d_model = 128
+        dim_feedforward = 128
+        num_layers = 2
+        mac_layer = (3*T_seq*d_model*d_model + 2*T_seq * T_seq*d_model + T_seq*d_model*d_model + 2*dim_feedforward*d_model)
+        mac_input_project = T_seq * 1 * d_model
+        mac_classifier = d_model * args.classes
+        mac_transformer = num_layers * mac_layer + mac_input_project + mac_classifier
+        print(f"MACs for Transformer model: {mac_transformer}")
+        energy_transformer_per_sample = mac_transformer
+        print(f"Estimated energy per sample for Transformer (in arbitrary units): {energy_transformer_per_sample:.2f}")
+        energy_transformer_per_accuracy = energy_transformer_per_sample / acc
+        print(f"Estimated energy per accuracy for Transformer (in arbitrary units): {energy_transformer_per_accuracy:.2f}")
 
 
 
