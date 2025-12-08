@@ -131,7 +131,7 @@ class STDPReservoir(LIFReservoir):
         dW = dW - dW.mean(dim=0, keepdim=True)
         noise = noise_std * torch.randn_like(dW)
         W_rec = W_rec + dW + noise
-        W_rec = torch.clamp(W_rec, min=-0.5, max=0.5)
+        W_rec = W_rec.clamp(min=-0.5, max=0.5)
         rho = self.estimate_spectral_radius(W_rec)
         if rho > 0:
             W_rec *= self.spectral_radius / rho
