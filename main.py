@@ -27,12 +27,7 @@ def get_model(args):
     elif args.model == "transformer":
         from models import TransformerClassifier
         return TransformerClassifier(args.seq_len, args.classes)
-    elif args.model == "lifstatic":
-        from models import ReservoirClassifier
-        from SNN import LIFReservoir
-        reservoir = LIFReservoir(n_in = 10, n_reservoir = 200)  # 10 receptors per input channel
-        return ReservoirClassifier(classes = args.classes, reservoir = reservoir)
-    elif args.model == "lifstdp":
+    elif args.model == "lifstdp" or args.model == "lifstatic":
         from models import ReservoirClassifier
         from SNN import STDPReservoir
         reservoir = STDPReservoir(n_in = 10, n_reservoir = 200)  # 10 receptors per input channel
@@ -141,10 +136,9 @@ def main(args):
 
         epoch_losses = []
         for features,labels in pbar:
-            features, labels = features.to(device), labels.to(device)
+            features, labels = features.to(device), labels.to(device)               
             if "lif" in args.model:
                 features = encode_spikes(features)
-            if "lif" in args.model:
                 predicted = model(features, use_stdp = False)
             else:
                 predicted = model(features)
@@ -176,12 +170,11 @@ def main(args):
     tpbar = tqdm(test_loader)
     for batch in tpbar:
         features, labels = batch
-        features, labels = features.to(device), labels.to(device)
-        if "lif" in args.model:
-            features = encode_spikes(features)
-            input_spike_total += features.sum().item() #counts input spikes for SNN models
+        features, labels = features.to(device), labels.to(device)            
         with torch.no_grad():
             if "lif" in args.model:
+                features = encode_spikes(features)
+                input_spike_total += features.sum().item() #counts input spikes for SNN models
                 predicted = model(features, use_stdp = False)
             else:
                 predicted = model(features)
