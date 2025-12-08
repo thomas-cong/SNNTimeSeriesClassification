@@ -27,7 +27,12 @@ def get_model(args):
     elif args.model == "transformer":
         from models import TransformerClassifier
         return TransformerClassifier(args.seq_len, args.classes)
-    elif args.model == "lifstatic" or args.model == "lifstdp":
+    elif args.model == "lifstatic":
+        from models import ReservoirClassifier
+        from SNN import LIFReservoir
+        reservoir = LIFReservoir(n_in = 10, n_reservoir = 200)  # 10 receptors per input channel
+        return ReservoirClassifier(classes = args.classes, reservoir = reservoir)
+    elif args.model == "lifstdp":
         from models import ReservoirClassifier
         from SNN import STDPReservoir
         reservoir = STDPReservoir(n_in = 10, n_reservoir = 200)  # 10 receptors per input channel
@@ -83,7 +88,7 @@ def encode_spikes(x, n_receptors=10):
 
 def stdp_train(model, data, freeze = True):
     device = next(model.parameters()).device
-    assert model.reservoir.stdp_update, "no STDP functionality available for the model"
+    assert hasattr(model.reservoir, "stdp_update"), "no STDP functionality available for the model"
     print("Training model via STDP")
     for batch in data:
         features, labels = batch
@@ -129,22 +134,26 @@ def main(args):
     best_loss = float('inf')
     best_state = None
     for epoch in range(args.epochs):
-        pbar = tqdm(train_loader)
         if epoch == 0 and "stdp" in args.model:
             for i in range(args.stdp_passes):
-                model = stdp_train(model, pbar, freeze = (i == args.stdp_passes - 1))
+                stdp_train(model, train_loader, freeze = (i == args.stdp_passes - 1))
+        pbar = tqdm(train_loader)
+
         epoch_losses = []
-        for batch in pbar:
-            features, labels = batch
+        for features,labels in pbar:
             features, labels = features.to(device), labels.to(device)
             if "lif" in args.model:
                 features = encode_spikes(features)
-            predicted = model(features, use_stdp = False)
+            if "lif" in args.model:
+                predicted = model(features, use_stdp = False)
+            else:
+                predicted = model(features)
             loss = loss_fn(predicted, labels)
             loss.backward()
             optimizer.step()
             optimizer.zero_grad()
             epoch_losses.append(loss.item())
+            pbar.set_description(f"Epoch {epoch} Loss {loss.item():.4f}")
         avg_loss = sum(epoch_losses) / len(epoch_losses)
         if avg_loss < best_loss:
             best_loss = avg_loss
@@ -172,7 +181,10 @@ def main(args):
             features = encode_spikes(features)
             input_spike_total += features.sum().item() #counts input spikes for SNN models
         with torch.no_grad():
-            predicted = model(features, use_stdp = False)
+            if "lif" in args.model:
+                predicted = model(features, use_stdp = False)
+            else:
+                predicted = model(features)
             loss = loss_fn(predicted, labels)
         test_losses.append(loss.item())
         preds_cls = torch.argmax(predicted, dim=1).cpu().numpy()
@@ -185,7 +197,7 @@ def main(args):
     print("Test Loss: {:.4f}, Accuracy: {:.4f}, Balanced Accuracy: {:.4f}".format(avg_test_loss, acc, bal_acc))
 
     # SNN statistics
-    if args.model == "lifstatic":
+    if "lif" in args.model:
         n_test = len(test)
         n_res = model.reservoir.n_reservoir
         sparsity = model.reservoir.sparsity

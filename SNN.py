@@ -58,10 +58,12 @@ class LIFReservoir(nn.Module):
                     ) # initialize random thresholds for each of the neurons
         self.tau_mem = tau_mem
         self.sparsity = sparsity #storing sparsity and spike count
+        self.spectral_radius = spectral_radius
         self.register_buffer("spike_count", torch.tensor(0.0), persistent=False) # for logging number of spikes
         # input to reservoir weight
         # no grad since fixed
         self.W_in = nn.Parameter(torch.randn(n_in, n_reservoir) * 0.8, requires_grad=False)
+
 
         # random weights for reservoir
         W_rec = torch.randn(n_reservoir, n_reservoir)
@@ -94,7 +96,7 @@ class LIFReservoir(nn.Module):
         # current within the reservoir
         I_rec = self.v @ self.W_rec
         # total current to each neuron
-        I_total = I_in + I_rec
+        I_total = I_in + I_rec + self.I_bias
         # decay term in LIF equation
         decay = torch.exp(torch.tensor(-self.dt / self.tau_mem, device=pre_spikes.device))
         # apply LIF
@@ -107,6 +109,7 @@ class LIFReservoir(nn.Module):
         # update state to reset to 0 if spiked
 
         return post_spikes
+
 class STDPReservoir(LIFReservoir):
     def __init__(self, n_in, n_reservoir, tau_trace = 2e-2, dt=1e-3, v_th = 0.5, tau_mem = 1e-2, sparsity = 0.2, spectral_radius = 0.9, target_rate = 0.1, eta_ip = 1e-3, lateral_strength = 0.05):
         super().__init__(n_in, n_reservoir, dt, v_th, tau_mem, sparsity, spectral_radius)
