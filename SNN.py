@@ -4,18 +4,18 @@ from torch import nn
 class LIFLayer(nn.Module):
     def __init__(self, n_in, n_out, dt=1e-3, v_th=1.0, tau_mem=2e-2):
         super().__init__()
-        self.n_in = n_in
+        self.n_in = n_in 
         self.n_out = n_out
         self.dt = dt
         # initialize
         self.v_th = nn.Parameter(
-                        torch.rand(n_out) * 0.2 + 0.2,
+                        torch.rand(n_out) * 0.1 + 0.1,
                         requires_grad=False
                     ) # initialize random thresholds for each of the neurons
         self.tau_mem = tau_mem
 
         # Randomly initialized weight set
-        self.W = nn.Parameter(torch.randn(n_in, n_out))
+        self.W = nn.Parameter(torch.randn(n_in, n_out) * 1.5)
 
         # We initialize v as None or empty buffer; we will shape it in forward
         self.register_buffer("v", None)
@@ -47,9 +47,9 @@ class STDPLayer(nn.Module):
                  dt=1e-3,
                  a_plus=0.05,
                  a_minus=0.06,
-                 learning_rate=5e-2,
-                 lateral_strength=0.3,
-                 w_max=0.5,
+                 learning_rate=0.01,
+                 lateral_strength=0.1,
+                 w_max=1.0,
                  w_min=-1.0):
         super().__init__()
         self.n_pre = n_pre
@@ -65,11 +65,11 @@ class STDPLayer(nn.Module):
         self.w_min = w_min
 
         self.W = nn.Parameter(
-            torch.rand(n_pre, n_classes) * 0.3 + 0.1,
+            torch.rand(n_pre, n_classes) * 0.5 + 0.2,
             requires_grad=False
         )
         self.v_th = nn.Parameter(
-            torch.rand(n_classes) * 0.2 + 0.4,
+            torch.rand(n_classes) * 0.1 + 0.1,
             requires_grad=False
         )
 
@@ -106,7 +106,7 @@ class STDPLayer(nn.Module):
         post_spikes = (self.v >= self.v_th).float()
         if label is not None:   
             pred = post_spikes.sum(dim = 0).argmax()
-            reward = 1.0 if pred == label else -0.2
+            reward = 1.0 if pred == label else -1.0
         global_activity = post_spikes.sum(dim=1, keepdim=True)
         self.v = self.v - self.lateral_strength * global_activity
         trace_decay = torch.exp(torch.tensor(-self.dt / self.tau_trace, device=device))
@@ -123,7 +123,7 @@ class LIFReservoir(nn.Module):
     Class that is purely randomly initialized set of LIF neurons
     [Mainly used for STDPReservoir Base]
     '''
-    def __init__(self, n_in, n_reservoir, dt=1e-3, v_th=0.5, tau_mem=1e-2, sparsity=0.1, spectral_radius=0.9):
+    def __init__(self, n_in, n_reservoir, dt=1e-3, v_th=0.3, tau_mem=1e-2, sparsity=0.1, spectral_radius=0.9):
         super().__init__()
         # initialize basic parameters
         self.n_in = n_in
@@ -131,7 +131,7 @@ class LIFReservoir(nn.Module):
         self.dt = dt
         self.spectral_radius = spectral_radius
         self.v_th = nn.Parameter(
-                        torch.rand(n_reservoir) * 0.2 + 0.2,
+                        torch.rand(n_reservoir) * 0.1 + 0.1,
                         requires_grad=False
                     ) # initialize random thresholds for each of the neurons
         self.tau_mem = tau_mem
@@ -140,7 +140,7 @@ class LIFReservoir(nn.Module):
         self.register_buffer("spike_count", torch.tensor(0.0), persistent=False) # for logging number of spikes
         # input to reservoir weight
         # no grad since fixed
-        self.W_in = nn.Parameter(torch.randn(n_in, n_reservoir) * 0.8, requires_grad=False)
+        self.W_in = nn.Parameter(torch.randn(n_in, n_reservoir) * 1.5, requires_grad=False)
 
 
         # random weights for reservoir

@@ -27,8 +27,8 @@ export VAR=`bc -l <<< "${SLURM_ARRAY_TASK_ID}"`
 python main.py --model lifstdpreadout \
  --dataset twopattern \
  --batch_size 1 \
- --epochs 3 \
- --stdp_passes 3 \
+ --epochs 10 \
+ --stdp_passes 1 \
  --reservoir_size 500 \
  --reservoir_path "/home/tcong13/949Final/models/500_stdp_reservoir.pt"
-# python main.py --model lifstdp --dataset twopattern --batch_size 1 --epochs 40 --stdp_passes 3 
+# python main.py --model lifstdp --dataset twopattern --batch_size 1 --epochs 40 --stdp_passes 3 --reservoir_path "/home/tcong13/949Final/models/500_stdp_reservoir.pt"

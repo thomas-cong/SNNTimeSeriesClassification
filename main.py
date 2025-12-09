@@ -20,7 +20,7 @@ def parse_arguments():
     parser.add_argument("--reservoir_size", type = int, default = 200)
     parser.add_argument("--stdp_passes", type = int, default = 3)
     parser.add_argument("--reservoir_path", type = str, default = None)
-    parser.add_argument("--val", type = bool, default = True)
+    parser.add_argument("--val", type = bool, default = False)
     return parser.parse_args()
 def get_model(args):
     assert type(args.seq_len) == int, "Seq length has to be int"
@@ -234,7 +234,7 @@ def main(args):
 
     # load best checkpoint
     if best_state is not None:
-        model.load_state_dict(best_state, weights_only = True)
+        model.load_state_dict(best_state)
         print("Loaded best checkpoint with loss: {:.4f}".format(best_loss))
 
     # test
@@ -257,6 +257,7 @@ def main(args):
                 predicted = model(features, reservoir_stdp = False)
             elif stdp_readout:
                 features = encode_spikes(features)
+                input_spike_total += features.sum().item()
                 reset_state(model)
                 output = model(features, labels=None, reservoir_stdp=False, classifier_stdp=False)
                 pred = torch.argmax(output, dim=1)
