@@ -44,8 +44,11 @@ def load_or_create_reservoir(path, n_in, n_reservoir):
     from SNN import STDPReservoir
     if path and os.path.exists(path):
         print(f"Loading reservoir from {path}")
-        return torch.load(path)
-    return STDPReservoir(n_in=n_in, n_reservoir=n_reservoir)
+        return torch.load(path, weights_only = False)
+    reservoir = STDPReservoir(n_in=n_in, n_reservoir=n_reservoir)
+    for param in reservoir.parameters():
+        param.requires_grad = False
+    return reservoir
 
 def save_reservoir(reservoir, path):
     if path:
@@ -168,7 +171,7 @@ def main(args):
     best_state = None
     stdp_readout = "stdpreadout" in args.model
     if stdp_readout:
-        print("Not using loss: STDP readout via teaching mechanism")
+        print("Not using loss: STDP readout via reward mechanism")
     for epoch in range(args.epochs):
         if epoch == 0 and "stdp" in args.model:
             if not (args.reservoir_path and os.path.exists(args.reservoir_path)):
@@ -202,7 +205,7 @@ def main(args):
                 epoch_losses.append(loss.item())
                 pbar.set_description(f"Epoch {epoch} Loss {loss.item():.4f}")
             else:
-                pbar.set_description(f"Epoch {epoch} Teaching...")
+                pbar.set_description(f"Epoch {epoch} Rewarding...")
         if epoch_losses:
             avg_loss = sum(epoch_losses) / len(epoch_losses)
             if avg_loss < best_loss:
@@ -229,7 +232,7 @@ def main(args):
 
     # load best checkpoint
     if best_state is not None:
-        model.load_state_dict(best_state)
+        model.load_state_dict(best_state, weights_only = True)
         print("Loaded best checkpoint with loss: {:.4f}".format(best_loss))
 
     # test

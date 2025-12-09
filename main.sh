@@ -25,3 +25,4 @@ export MPI_FLAGS="-mca btl ^openib -mca pml ob1 -x PSM2_CUDA=1 -x PSM2_MULTIRAIL
 
 export VAR=`bc -l <<< "${SLURM_ARRAY_TASK_ID}"`
 python main.py --model lifstdpreadout --dataset twopattern --batch_size 1 --epochs 3 --stdp_passes 3 --reservoir_path "/home/tcong13/949Final/models/stdp_reservoir.pt"
+# python main.py --model lifstdp --dataset twopattern --batch_size 1 --epochs 40 --stdp_passes 3 
