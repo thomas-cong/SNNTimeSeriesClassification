@@ -21,15 +21,11 @@ class LIFLayer(nn.Module):
         self.register_buffer("v", None)
 
     def forward(self, pre_spikes):
-        # pre_spikes is shape (Batch, n_in)
-        batch_size = pre_spikes.shape[0]
+        device = pre_spikes.device
+        if self.v is None:
+            self.v = torch.zeros(1, self.n_out, device=device)
 
-        #Initialize membrane potential if it doesn't exist or batch size changed
-        if self.v is None or self.v.shape[0] != batch_size:
-            self.v = torch.zeros(batch_size, self.n_out, device=pre_spikes.device)
-
-        #Compute Input Current
-        I = pre_spikes @ self.W  # Shape: (Batch, n_out)
+        I = pre_spikes @ self.W
 
         #Compute Decay Factor
         decay = torch.exp(torch.tensor(-self.dt / self.tau_mem, device=pre_spikes.device))
@@ -43,8 +39,104 @@ class LIFLayer(nn.Module):
         self.v = self.v * (1.0 - post_spikes)
 
         return post_spikes
+class STDPLayer(nn.Module):
+    def __init__(self, n_pre, n_classes,
+                 tau_mem=50e-3,
+                 tau_trace=50e-3,
+                 v_th=0.5,
+                 dt=1e-3,
+                 a_plus=0.05,
+                 a_minus=0.06,
+                 learning_rate=5e-2,
+                 target_rate=0.1,
+                 eta_ip=5e-4,
+                 lateral_strength=0.3,
+                 w_max=0.5,
+                 w_min=-1.0):
+        super().__init__()
+        self.n_pre = n_pre
+        self.n_classes = n_classes
+        self.dt = dt
+        self.tau_mem = tau_mem
+        self.tau_trace = tau_trace
+        self.a_plus = a_plus
+        self.a_minus = a_minus
+        self.learning_rate = learning_rate
+        self.target_rate = target_rate
+        self.eta_ip = eta_ip
+        self.lateral_strength = lateral_strength
+        self.w_max = w_max
+        self.w_min = w_min
+
+        self.W = nn.Parameter(
+            torch.rand(n_pre, n_classes) * 0.3 + 0.1,
+            requires_grad=False
+        )
+        self.v_th = nn.Parameter(
+            torch.rand(n_classes) * 0.2 + 0.4,
+            requires_grad=False
+        )
+
+        self.register_buffer("v", None)
+        self.register_buffer("pre_trace", None)
+        self.register_buffer("post_trace", None)
+        self.register_buffer("firing_rates", torch.zeros(n_classes))
+        self.register_buffer("rate_decay", torch.tensor(0.995))
+
+    @torch.no_grad()
+    def stdp_update(self, pre_spikes, post_spikes, reward = 1.0):
+        pre = pre_spikes.squeeze(0)
+        post = post_spikes.squeeze(0)
+        pre_trace = self.pre_trace.squeeze(0)
+        post_trace = self.post_trace.squeeze(0)
+        potentiation = self.a_plus * torch.outer(pre_trace, post)
+        depression = -self.a_minus * torch.outer(pre, post_trace)
+        dW = self.learning_rate * (potentiation + depression) * reward
+        dW = dW - dW.mean(dim=0, keepdim=True)
+        self.W.data = torch.clamp(self.W + dW, min=self.w_min, max=self.w_max)
+        col_norms = self.W.norm(dim=0, keepdim=True) + 1e-8
+        self.W.data = self.W / col_norms * col_norms.mean()
+
+    @torch.no_grad()
+    def intrinsic_plasticity(self, post_spikes):
+        spikes = post_spikes.squeeze(0)
+        self.firing_rates = self.rate_decay * self.firing_rates + (1 - self.rate_decay) * spikes
+        rate_error = self.firing_rates - self.target_rate
+        self.v_th.data = torch.clamp(self.v_th + self.eta_ip * rate_error, min=0.2, max=1.5)
+
+    def forward(self, pre_spikes, label = None, use_stdp=False):
+        N_pre = pre_spikes.shape[1]
+        device = pre_spikes.device
+        reward = 1.0
+        if self.v is None:
+            self.v = torch.zeros(1, self.n_classes, device=device)
+            self.pre_trace = torch.zeros(1, N_pre, device=device)
+            self.post_trace = torch.zeros(1, self.n_classes, device=device)
+
+        I = pre_spikes @ self.W
+        decay = torch.exp(torch.tensor(-self.dt / self.tau_mem, device=device))
+        self.v = decay * self.v + (1 - decay) * I
+        post_spikes = (self.v >= self.v_th).float()
+        if label is not None:   
+            pred = post_spikes.sum(dim = 0).argmax()
+            reward = 1.0 if pred == label else -0.2
+        global_activity = post_spikes.sum(dim=1, keepdim=True)
+        self.v = self.v - self.lateral_strength * global_activity
+        trace_decay = torch.exp(torch.tensor(-self.dt / self.tau_trace, device=device))
+        self.pre_trace = trace_decay * self.pre_trace + pre_spikes
+        self.post_trace = trace_decay * self.post_trace + post_spikes
+        if use_stdp:
+            self.stdp_update(pre_spikes, post_spikes, reward = reward)
+            self.intrinsic_plasticity(post_spikes)
+        self.v = self.v * (1.0 - post_spikes)
+        return post_spikes
+
 
 class LIFReservoir(nn.Module):
+    '''
+    Class that is purely randomly initialized set of LIF neurons
+    [Mainly used for STDPReservoir Base]
+    '''
     def __init__(self, n_in, n_reservoir, dt=1e-3, v_th=0.5, tau_mem=1e-2, sparsity=0.1, spectral_radius=0.9):
         super().__init__()
         # initialize basic parameters
@@ -87,10 +179,9 @@ class LIFReservoir(nn.Module):
 
 
     def forward(self, pre_spikes):
-        batch_size = pre_spikes.shape[0]
-        # initialize state vector in case spike batch changes
-        if self.v is None or self.v.shape[0] != batch_size:
-            self.v = torch.zeros(batch_size, self.n_reservoir, device=pre_spikes.device)
+        device = pre_spikes.device
+        if self.v is None:
+            self.v = torch.zeros(1, self.n_reservoir, device=device)
         # input current
         I_in = pre_spikes @ self.W_in
         # current within the reservoir
@@ -111,7 +202,16 @@ class LIFReservoir(nn.Module):
         return post_spikes
 
 class STDPReservoir(LIFReservoir):
-    def __init__(self, n_in, n_reservoir, tau_trace = 2e-2, dt=1e-3, v_th = 0.5, tau_mem = 1e-2, sparsity = 0.2, spectral_radius = 0.9, target_rate = 0.1, eta_ip = 1e-3, lateral_strength = 0.05):
+    def __init__(self, n_in, n_reservoir,
+                 tau_trace = 2e-2,
+                 dt=1e-3,
+                 v_th = 0.5, 
+                 tau_mem = 1e-2,
+                 sparsity = 0.2,
+                 spectral_radius = 0.9,
+                 target_rate = 0.1,
+                 eta_ip = 1e-3,
+                 lateral_strength = 0.05):
         super().__init__(n_in, n_reservoir, dt, v_th, tau_mem, sparsity, spectral_radius)
         self.tau_trace = tau_trace
         self.target_rate = target_rate
@@ -147,45 +247,32 @@ class STDPReservoir(LIFReservoir):
             W_rec *= self.spectral_radius / rho
         self.W_rec.copy_(W_rec)
     @torch.no_grad()
-    def intrinsic_plasticity(self, avg_spikes):
-        # update running firing rate estimate
-        self.firing_rates = self.rate_decay * self.firing_rates + (1 - self.rate_decay) * avg_spikes
-        # adjust thresholds: increase if firing too much, decrease if too little
+    def intrinsic_plasticity(self, spikes):
+        self.firing_rates = self.rate_decay * self.firing_rates + (1 - self.rate_decay) * spikes
         rate_error = self.firing_rates - self.target_rate
         self.v_th.data = torch.clamp(self.v_th + self.eta_ip * rate_error, min=0.1, max=1.0)
 
-    def forward(self, pre_spikes, use_stdp = False):
-        batch_size = pre_spikes.shape[0]
-        if self.v is None or self.v.shape[0] != batch_size:
-            self.v = torch.zeros(batch_size, self.n_reservoir, device=pre_spikes.device)
-        # input current
+    def forward(self, pre_spikes, use_stdp=False):
+        device = pre_spikes.device
+        if self.v is None:
+            self.v = torch.zeros(1, self.n_reservoir, device=device)
         I_in = pre_spikes @ self.W_in
-        # current within the reservoir
         I_rec = self.v @ self.W_rec
-        # total current to each neuron
         I_total = I_in + I_rec
-        # decay term in LIF equation
-        decay = torch.exp(torch.tensor(-self.dt / self.tau_mem, device=pre_spikes.device))
-        # apply LIF
+        decay = torch.exp(torch.tensor(-self.dt / self.tau_mem, device=device))
         self.v = decay * self.v + (1 - decay) * I_total
-        # check against spiking threshold
         post_spikes = (self.v >= self.v_th).float()
-        # lateral inhibition: subtract global activity from membrane potential
-        global_activity = post_spikes.mean(dim=1, keepdim=True)
+        global_activity = post_spikes.sum(dim=1, keepdim=True)
         self.v = self.v - self.lateral_strength * global_activity
-        # calculate trace decay factor
-        trace_decay = torch.exp(torch.tensor(-self.dt / self.tau_trace, device=pre_spikes.device))
-        # pre-trace: previous post-trace (spikes from t-1 are presynaptic for current step)
+        trace_decay = torch.exp(torch.tensor(-self.dt / self.tau_trace, device=device))
         self.pre_traces = self.post_traces * trace_decay
-        # post-trace: decay then set to 1 where neurons fired this step
-        avg_spikes = post_spikes.mean(dim=0) # only relevant if batch is > 0
+        spikes = post_spikes.squeeze(0)
         self.post_traces = self.post_traces * trace_decay
-        self.post_traces = torch.where(avg_spikes > 0, torch.ones_like(self.post_traces), self.post_traces)
-        self.spike_count += post_spikes.detach().sum() #logging number of spikes
+        self.post_traces = torch.where(spikes > 0, torch.ones_like(self.post_traces), self.post_traces)
+        self.spike_count += post_spikes.detach().sum()
         if use_stdp:
-            self.stdp_update(avg_spikes)
-            self.intrinsic_plasticity(avg_spikes)
-        # reset membrane potential where spiked
+            self.stdp_update(spikes)
+            self.intrinsic_plasticity(spikes)
         self.v = self.v * (1.0 - post_spikes)
         return post_spikes
 

@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from SNN import LIFReservoir
+from SNN import LIFReservoir, STDPLayer
 
 class MLPClassifier(nn.Module):
     def __init__(self, T, classes):
@@ -63,14 +63,30 @@ class ReservoirClassifier(nn.Module):
             nn.ReLU(),
             nn.Linear(64, classes)
         )
-    def forward(self, x, use_stdp = False):
+    def forward(self, x, reservoir_stdp = False):
         B,C, T = x.shape
         all_spikes = []
         for t in range(T):
             x_t = x[:,:,t] # move over channels simultaneously
-            spike_t = self.reservoir(x_t, use_stdp = use_stdp) # input as C, 1
+            spike_t = self.reservoir(x_t, use_stdp = reservoir_stdp) # input as C, 1
             all_spikes.append(spike_t)
         post_spike = torch.stack(all_spikes, dim=1)  # [B, T, reservoir_size]
         post_spike = torch.mean(post_spike, dim=1)  # [B, reservoir_size] mean pooling over time
         predicted = self.classifier(post_spike)
         return predicted
+class ReservoirSTDPReadout(nn.Module):
+    def __init__(self, classes, reservoir, data_channels = 1):
+        super().__init__()
+        self.reservoir = reservoir
+        self.classifier = STDPLayer(reservoir.n_reservoir, classes)
+    def forward(self, x, labels = None, reservoir_stdp = False, classifier_stdp = False):
+        B, C, T = x.shape
+        output_spikes = []
+        for t in range(T):
+            x_t = x[:,:, t]
+            reservoir_spike = self.reservoir(x_t, use_stdp = reservoir_stdp)
+            classifier_spike = self.classifier(reservoir_spike, labels, use_stdp = classifier_stdp)
+            output_spikes.append(classifier_spike)
+        output_spikes = torch.stack(output_spikes, dim=1)  # [B, T, n_classes]
+        spike_counts = output_spikes.sum(dim=1)  # [B, n_classes] - total spikes per class
+        return spike_counts

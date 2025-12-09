@@ -5,6 +5,7 @@ from torch.utils.data import TensorDataset, DataLoader
 import matplotlib.pyplot as plt
 import numpy as np
 import argparse
+import os
 from tqdm import tqdm
 
 from sklearn.metrics import accuracy_score, balanced_accuracy_score
@@ -17,6 +18,7 @@ def parse_arguments():
     parser.add_argument("--epochs", type = int, default = 300)
     parser.add_argument("--freeze_reservoir", type = bool, default = True)
     parser.add_argument("--stdp_passes", type = int, default = 3)
+    parser.add_argument("--reservoir_path", type = str, default = None)
     return parser.parse_args()
 def get_model(args):
     assert type(args.seq_len) == int, "Seq length has to be int"
@@ -30,8 +32,25 @@ def get_model(args):
     elif args.model == "lifstdp" or args.model == "lifstatic":
         from models import ReservoirClassifier
         from SNN import STDPReservoir
-        reservoir = STDPReservoir(n_in = 10, n_reservoir = 200)  # 10 receptors per input channel
+        reservoir = load_or_create_reservoir(args.reservoir_path, n_in=10, n_reservoir=200)
         return ReservoirClassifier(classes = args.classes, reservoir = reservoir)
+    elif args.model == "lifstdpreadout":
+        from models import ReservoirSTDPReadout
+        from SNN import STDPReservoir
+        reservoir = load_or_create_reservoir(args.reservoir_path, n_in=10, n_reservoir=200)
+        return ReservoirSTDPReadout(classes = args.classes, reservoir = reservoir)
+
+def load_or_create_reservoir(path, n_in, n_reservoir):
+    from SNN import STDPReservoir
+    if path and os.path.exists(path):
+        print(f"Loading reservoir from {path}")
+        return torch.load(path)
+    return STDPReservoir(n_in=n_in, n_reservoir=n_reservoir)
+
+def save_reservoir(reservoir, path):
+    if path:
+        print(f"Saving reservoir to {path}")
+        torch.save(reservoir, path)
 def get_dataset(args):
     if args.dataset == "heartbeat":
         from BinaryHeartBeatDataset import BinaryHeartBeatDataset
@@ -89,18 +108,37 @@ def stdp_train(model, data, freeze = True):
         features, labels = batch
         features, labels = features.to(device), labels.to(device)
         features = encode_spikes(features)
-        model(features, use_stdp = True)
+        reset_state(model)
+        model(features, reservoir_stdp = True)
     if freeze:
         for param in model.reservoir.parameters():
             param.requires_grad = False
         print("Model parameter require_grad: ", [f"{name}: {param.requires_grad}" for name, param in model.reservoir.named_parameters()])
     return model
 
+def reset_state(model): # resets for new data input
+    for m in model.modules():
+        if hasattr(m, "v"):
+            m.v = None
+        if hasattr(m, "pre_trace"):
+            m.pre_trace = None
+        if hasattr(m, "post_trace"):
+            m.post_trace = None
 
 def reset_snn_stats(model): #zeros out spike counts that has "spike_count"
     for module in model.modules():
         if hasattr(module, "spike_count"):
             module.spike_count.zero_()
+
+def teach(features, labels, model):
+    assert hasattr(model.reservoir, "stdp_update"), "no STDP functionality available for the model"
+    device = next(model.parameters()).device
+    features, labels = features.to(device), labels.to(device)
+    features = encode_spikes(features)
+    reset_state(model)
+    output = model(features, labels, reservoir_stdp = False,  classifier_stdp = True)
+    predicted = torch.argmax(output, dim = 1)
+    return predicted, output
 
 
 def main(args):
@@ -128,31 +166,66 @@ def main(args):
     # train
     best_loss = float('inf')
     best_state = None
+    stdp_readout = "stdpreadout" in args.model
+    if stdp_readout:
+        print("Not using loss: STDP readout via teaching mechanism")
     for epoch in range(args.epochs):
         if epoch == 0 and "stdp" in args.model:
-            for i in range(args.stdp_passes):
-                stdp_train(model, train_loader, freeze = (i == args.stdp_passes - 1))
+            if not (args.reservoir_path and os.path.exists(args.reservoir_path)):
+                for i in range(args.stdp_passes):
+                    pbar = tqdm(train_loader)
+                    stdp_train(model, pbar, freeze = (i == args.stdp_passes - 1))
+                save_reservoir(model.reservoir, args.reservoir_path)
         pbar = tqdm(train_loader)
-
         epoch_losses = []
+        epoch_preds = []
+        epoch_labels = []
         for features,labels in pbar:
-            features, labels = features.to(device), labels.to(device)               
-            if "lif" in args.model:
+            features, labels = features.to(device), labels.to(device)             
+            if "lif" in args.model and not stdp_readout:
                 features = encode_spikes(features)
-                predicted = model(features, use_stdp = False)
+                reset_state(model)
+                predicted = model(features, reservoir_stdp = False)
+            elif stdp_readout:
+                pred, output = teach(features, labels, model)
+                epoch_preds.extend(pred.cpu().numpy())
+                epoch_labels.extend(labels.cpu().numpy())
+                loss = None
             else:
+                reset_state(model)
                 predicted = model(features)
-            loss = loss_fn(predicted, labels)
-            loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
-            epoch_losses.append(loss.item())
-            pbar.set_description(f"Epoch {epoch} Loss {loss.item():.4f}")
-        avg_loss = sum(epoch_losses) / len(epoch_losses)
-        if avg_loss < best_loss:
-            best_loss = avg_loss
-            best_state = {k: v.clone() for k, v in model.state_dict().items()}
-        print("Epoch: {}, Loss: {:.4f}".format(epoch, avg_loss))
+            if not stdp_readout:
+                loss = loss_fn(predicted, labels)
+                loss.backward()
+                optimizer.step()
+                optimizer.zero_grad()
+                epoch_losses.append(loss.item())
+                pbar.set_description(f"Epoch {epoch} Loss {loss.item():.4f}")
+            else:
+                pbar.set_description(f"Epoch {epoch} Teaching...")
+        if epoch_losses:
+            avg_loss = sum(epoch_losses) / len(epoch_losses)
+            if avg_loss < best_loss:
+                best_loss = avg_loss
+                best_state = {k: v.clone() for k, v in model.state_dict().items()}
+            print("Epoch: {}, Loss: {:.4f}".format(epoch, avg_loss))
+        elif stdp_readout:
+            val_preds = []
+            val_labels = []
+            with torch.no_grad():
+                for features, labels in train_loader:
+                    features, labels = features.to(device), labels.to(device)
+                    features = encode_spikes(features)
+                    reset_state(model)
+                    output = model(features, labels=None, reservoir_stdp=False, classifier_stdp=False)
+                    pred = torch.argmax(output, dim=1)
+                    val_preds.extend(pred.cpu().numpy())
+                    val_labels.extend(labels.cpu().numpy())
+            val_acc = accuracy_score(val_labels, val_preds)
+            val_bal_acc = balanced_accuracy_score(val_labels, val_preds)
+            print("Epoch: {}, Val Acc: {:.4f}, Val Bal Acc: {:.4f}".format(epoch, val_acc, val_bal_acc))
+        else:
+            print("Epoch: {}, Loss: N/A".format(epoch))
 
     # load best checkpoint
     if best_state is not None:
@@ -172,22 +245,36 @@ def main(args):
         features, labels = batch
         features, labels = features.to(device), labels.to(device)            
         with torch.no_grad():
-            if "lif" in args.model:
+            if "lif" in args.model and not stdp_readout:
                 features = encode_spikes(features)
                 input_spike_total += features.sum().item() #counts input spikes for SNN models
-                predicted = model(features, use_stdp = False)
+                reset_state(model)
+                predicted = model(features, reservoir_stdp = False)
+            elif stdp_readout:
+                features = encode_spikes(features)
+                reset_state(model)
+                output = model(features, labels=None, reservoir_stdp=False, classifier_stdp=False)
+                pred = torch.argmax(output, dim=1)
+                loss = None
             else:
+                reset_state(model)
                 predicted = model(features)
-            loss = loss_fn(predicted, labels)
-        test_losses.append(loss.item())
-        preds_cls = torch.argmax(predicted, dim=1).cpu().numpy()
+            if not stdp_readout:
+                loss = loss_fn(predicted, labels)
+                test_losses.append(loss.item())
+                preds_cls = torch.argmax(predicted, dim=1).cpu().numpy()
+            else:
+                preds_cls = pred.cpu().numpy()
         labels_np = labels.cpu().numpy()
         all_preds.extend(preds_cls)
         all_labels.extend(labels_np)
-    avg_test_loss = sum(test_losses) / len(test_losses)
     acc = accuracy_score(all_labels, all_preds)
     bal_acc = balanced_accuracy_score(all_labels, all_preds)
-    print("Test Loss: {:.4f}, Accuracy: {:.4f}, Balanced Accuracy: {:.4f}".format(avg_test_loss, acc, bal_acc))
+    if test_losses:
+        avg_test_loss = sum(test_losses) / len(test_losses)
+        print("Test Loss: {:.4f}, Accuracy: {:.4f}, Balanced Accuracy: {:.4f}".format(avg_test_loss, acc, bal_acc))
+    else:
+        print("Test Loss: N/A, Accuracy: {:.4f}, Balanced Accuracy: {:.4f}".format(acc, bal_acc))
 
     # SNN statistics
     if "lif" in args.model:
