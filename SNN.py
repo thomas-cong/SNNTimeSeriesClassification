@@ -48,8 +48,6 @@ class STDPLayer(nn.Module):
                  a_plus=0.05,
                  a_minus=0.06,
                  learning_rate=5e-2,
-                 target_rate=0.1,
-                 eta_ip=5e-4,
                  lateral_strength=0.3,
                  w_max=0.5,
                  w_min=-1.0):
@@ -62,8 +60,6 @@ class STDPLayer(nn.Module):
         self.a_plus = a_plus
         self.a_minus = a_minus
         self.learning_rate = learning_rate
-        self.target_rate = target_rate
-        self.eta_ip = eta_ip
         self.lateral_strength = lateral_strength
         self.w_max = w_max
         self.w_min = w_min
@@ -80,8 +76,6 @@ class STDPLayer(nn.Module):
         self.register_buffer("v", None)
         self.register_buffer("pre_trace", None)
         self.register_buffer("post_trace", None)
-        self.register_buffer("firing_rates", torch.zeros(n_classes))
-        self.register_buffer("rate_decay", torch.tensor(0.995))
 
     @torch.no_grad()
     def stdp_update(self, pre_spikes, post_spikes, reward = 1.0):
@@ -96,13 +90,6 @@ class STDPLayer(nn.Module):
         self.W.data = torch.clamp(self.W + dW, min=self.w_min, max=self.w_max)
         col_norms = self.W.norm(dim=0, keepdim=True) + 1e-8
         self.W.data = self.W / col_norms * col_norms.mean()
-
-    @torch.no_grad()
-    def intrinsic_plasticity(self, post_spikes):
-        spikes = post_spikes.squeeze(0)
-        self.firing_rates = self.rate_decay * self.firing_rates + (1 - self.rate_decay) * spikes
-        rate_error = self.firing_rates - self.target_rate
-        self.v_th.data = torch.clamp(self.v_th + self.eta_ip * rate_error, min=0.2, max=1.5)
 
     def forward(self, pre_spikes, label = None, use_stdp=False):
         N_pre = pre_spikes.shape[1]
@@ -127,7 +114,6 @@ class STDPLayer(nn.Module):
         self.post_trace = trace_decay * self.post_trace + post_spikes
         if use_stdp:
             self.stdp_update(pre_spikes, post_spikes, reward = reward)
-            self.intrinsic_plasticity(post_spikes)
         self.v = self.v * (1.0 - post_spikes)
         return post_spikes
 

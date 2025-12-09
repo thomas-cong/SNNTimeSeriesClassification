@@ -17,8 +17,10 @@ def parse_arguments():
     parser.add_argument("--batch_size", type = int, default = 32)
     parser.add_argument("--epochs", type = int, default = 300)
     parser.add_argument("--freeze_reservoir", type = bool, default = True)
+    parser.add_argument("--reservoir_size", type = int, default = 200)
     parser.add_argument("--stdp_passes", type = int, default = 3)
     parser.add_argument("--reservoir_path", type = str, default = None)
+    parser.add_argument("--val", type = bool, default = True)
     return parser.parse_args()
 def get_model(args):
     assert type(args.seq_len) == int, "Seq length has to be int"
@@ -32,12 +34,12 @@ def get_model(args):
     elif args.model == "lifstdp" or args.model == "lifstatic":
         from models import ReservoirClassifier
         from SNN import STDPReservoir
-        reservoir = load_or_create_reservoir(args.reservoir_path, n_in=10, n_reservoir=200)
+        reservoir = load_or_create_reservoir(args.reservoir_path, n_in=10, n_reservoir=args.reservoir_size)
         return ReservoirClassifier(classes = args.classes, reservoir = reservoir)
     elif args.model == "lifstdpreadout":
         from models import ReservoirSTDPReadout
         from SNN import STDPReservoir
-        reservoir = load_or_create_reservoir(args.reservoir_path, n_in=10, n_reservoir=200)
+        reservoir = load_or_create_reservoir(args.reservoir_path, n_in=10, n_reservoir=args.reservoir_size)
         return ReservoirSTDPReadout(classes = args.classes, reservoir = reservoir)
 
 def load_or_create_reservoir(path, n_in, n_reservoir):
@@ -212,11 +214,11 @@ def main(args):
                 best_loss = avg_loss
                 best_state = {k: v.clone() for k, v in model.state_dict().items()}
             print("Epoch: {}, Loss: {:.4f}".format(epoch, avg_loss))
-        elif stdp_readout:
+        elif stdp_readout and args.val:
             val_preds = []
             val_labels = []
             with torch.no_grad():
-                for features, labels in train_loader:
+                for features, labels in tqdm(train_loader):
                     features, labels = features.to(device), labels.to(device)
                     features = encode_spikes(features)
                     reset_state(model)
