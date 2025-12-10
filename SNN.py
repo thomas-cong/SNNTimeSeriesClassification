@@ -156,10 +156,8 @@ class LIFReservoir(nn.Module):
         self.register_buffer("spike_count", torch.tensor(0.0), persistent=False) # for logging number of spikes
         # input to reservoir weight
         # no grad since fixed
-        W_in_dense = torch.randn(n_in, n_reservoir) * 8.0
-        # Make W_in sparse (20% connectivity) to increase feature selectivity
-        mask_in = (torch.rand(n_in, n_reservoir) < 0.2).float()
-        self.W_in = nn.Parameter(W_in_dense * mask_in, requires_grad=False)
+        W_in = torch.randn(n_in, n_reservoir) * 3.0
+        self.W_in = nn.Parameter(W_in, requires_grad=False)
 
 
         # random weights for reservoir
@@ -181,7 +179,7 @@ class LIFReservoir(nn.Module):
         # state vector
         self.register_buffer("v", None)
         self.register_buffer("prev_spikes", None)
-        self.register_buffer("I_bias", 0.1 * torch.randn(n_reservoir)) # add a slight random bias
+        self.register_buffer("I_bias", 0.1 * torch.randn(n_reservoir) + 0.05) # add a slight random bias
 
 
     def forward(self, pre_spikes):
@@ -215,7 +213,7 @@ class STDPReservoir(LIFReservoir):
                  dt=1e-3,
                  v_th = 0.3, 
                  tau_mem = 2e-2,
-                 sparsity = 0.1,
+                 sparsity = 0.4,
                  spectral_radius = 1.05,
                  target_rate = 0.2,
                  eta_ip = 1e-4, # Reduced IP rate
@@ -315,7 +313,9 @@ class STDPReservoir(LIFReservoir):
         post_spikes = (self.v >= self.v_th).float()
         
         global_activity = post_spikes.sum(dim=1, keepdim=True)
-        self.v = self.v - self.lateral_strength * global_activity
+        self.v = self.v * (1.0 - post_spikes)
+        self.v = self.v - self.lateral_strength * (global_activity / self.n_reservoir)
+
         
         # Update Traces
         trace_decay = torch.exp(torch.tensor(-self.dt / self.tau_trace, device=device))
@@ -337,7 +337,6 @@ class STDPReservoir(LIFReservoir):
             self.stdp_update(self.prev_spikes.squeeze(0), spikes)
             self.intrinsic_plasticity(spikes)
             
-        self.v = self.v * (1.0 - post_spikes)
         self.prev_spikes = post_spikes
         return post_spikes
 

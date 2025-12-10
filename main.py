@@ -103,7 +103,9 @@ def encode_spikes(x, n_receptors=10):
         # Reshape and assign
         reshaped_spikes = poisson_spikes.reshape(B, C * n_receptors)
         spikes[:, :, t] = reshaped_spikes
-    
+
+    # print("Mean input firing rate:",
+    #   spikes.sum().item() / (spikes.numel()))
 
     return spikes
 
@@ -150,6 +152,22 @@ def reward(features, labels, model):
     return predicted, output
 
 
+def save_weight_matrix_heatmap(model, path="reservoir_weights.png"):
+    """
+    Save heatmap of the reservoir recurrent weights
+    """
+    weights = model.reservoir.W_rec.detach().cpu().numpy()
+    plt.figure(figsize=(10, 8))
+    plt.imshow(weights, cmap='viridis', aspect='auto')
+    plt.colorbar(label="Weight Value")
+    plt.title(f"Reservoir Weights (Spectral Radius: {model.reservoir.spectral_radius:.2f})")
+    plt.xlabel("Post-synaptic Neuron")
+    plt.ylabel("Pre-synaptic Neuron")
+    plt.tight_layout()
+    plt.savefig(path)
+    print(f"Saved reservoir weight matrix visualization to {path}")
+    plt.close()
+
 def main(args):
     print("Args: ", args)
     if "stdp" in args.model:
@@ -186,6 +204,11 @@ def main(args):
                     pbar = tqdm(train_loader)
                     stdp_train(model, pbar, freeze = (i == args.stdp_passes - 1))
                 save_reservoir(model.reservoir, args.reservoir_path)
+                
+                # Save weight visualization after STDP training
+                if hasattr(model.reservoir, "W_rec"):
+                     save_weight_matrix_heatmap(model, "reservoir_weights_after_stdp.png")
+                     
         pbar = tqdm(train_loader)
         epoch_losses = []
         epoch_preds = []
@@ -193,7 +216,8 @@ def main(args):
         for features,labels in pbar:
             features, labels = features.to(device), labels.to(device)            
             # Track spikes for logging
-            prev_spikes = model.reservoir.spike_count.item()
+            if "lif" in args.model:
+                prev_spikes = model.reservoir.spike_count.item()
             
             if "lif" in args.model and not stdp_readout:
                 features = encode_spikes(features)
@@ -207,15 +231,15 @@ def main(args):
             else:
                 reset_state(model)
                 predicted = model(features)
-            
-            # Calculate firing rate
-            curr_spikes = model.reservoir.spike_count.item()
-            n_res = model.reservoir.n_reservoir
-            # features is [B, C, T]
-            T_len = features.shape[-1] 
-            # batch_size is features.shape[0], but stdp is 1 usually
-            bs = features.shape[0]
-            firing_rate = (curr_spikes - prev_spikes) / (n_res * T_len * bs)
+            if "lif" in args.model:
+                # Calculate firing rate
+                curr_spikes = model.reservoir.spike_count.item()
+                n_res = model.reservoir.n_reservoir
+                # features is [B, C, T]
+                T_len = features.shape[-1] 
+                # batch_size is features.shape[0], but stdp is 1 usually
+                bs = features.shape[0]
+                firing_rate = (curr_spikes - prev_spikes) / (n_res * T_len * bs)
 
             if not stdp_readout:
                 loss = loss_fn(predicted, labels)
@@ -223,7 +247,7 @@ def main(args):
                 optimizer.step()
                 optimizer.zero_grad()
                 epoch_losses.append(loss.item())
-                pbar.set_description(f"Epoch {epoch} Loss {loss.item():.4f} Rate {firing_rate:.3f}")
+                pbar.set_description(f"Epoch {epoch} Loss {loss.item():.4f}")
             else:
                 pbar.set_description(f"Epoch {epoch} Rewarding... Rate {firing_rate:.3f}")
         if epoch_losses:

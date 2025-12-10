@@ -24,5 +24,5 @@ export FLAGS="--bind-to socket -map-by core"
 export MPI_FLAGS="-mca btl ^openib -mca pml ob1 -x PSM2_CUDA=1 -x PSM2_MULTIRAIL=0 -x PSM2_GPUDIRECT=1 -x NCCL_NET_GDR_LEVEL=5 -x NCCL_P2P_LEVEL=5 -x NCCL_NET_GDR_READ=1 -x NCCL_DEBUG -x LD_LIBRARY_PATH" # -x ANACONDA_DIR"
 
 export VAR=`bc -l <<< "${SLURM_ARRAY_TASK_ID}"`
-python main.py --model lifstdpreadout --dataset twopattern --batch_size 64 --n_voters 1 --epochs 3 --stdp_passes 1 --reservoir_size 200
-# python main.py --model lifstdp --dataset twopattern --batch_size 1 --epochs 40 --stdp_passes 3 --reservoir_path "/home/tcong13/949Final/models/200_stdp_reservoir.pt"
+# python main.py --model lifstdpreadout --dataset twopattern --batch_size 1 --n_voters 3 --epochs 3 --stdp_passes 1 --reservoir_size 200 --reservoir_path "/home/tcong13/949Final/models/200_fixed_reservoir.pt"
+python main.py --model mlp --dataset twopattern --batch_size 64 --epochs 30 
