@@ -21,6 +21,7 @@ def parse_arguments():
     parser.add_argument("--stdp_passes", type = int, default = 3)
     parser.add_argument("--reservoir_path", type = str, default = None)
     parser.add_argument("--val", type = bool, default = False)
+    parser.add_argument("--n_voters", type = int, default = 1)
     return parser.parse_args()
 def get_model(args):
     assert type(args.seq_len) == int, "Seq length has to be int"
@@ -40,7 +41,7 @@ def get_model(args):
         from models import ReservoirSTDPReadout
         from SNN import STDPReservoir
         reservoir = load_or_create_reservoir(args.reservoir_path, n_in=10, n_reservoir=args.reservoir_size)
-        return ReservoirSTDPReadout(classes = args.classes, reservoir = reservoir)
+        return ReservoirSTDPReadout(classes = args.classes, reservoir = reservoir, n_voters = args.n_voters)
 
 def load_or_create_reservoir(path, n_in, n_reservoir):
     from SNN import STDPReservoir
@@ -102,6 +103,7 @@ def encode_spikes(x, n_receptors=10):
         # Reshape and assign
         reshaped_spikes = poisson_spikes.reshape(B, C * n_receptors)
         spikes[:, :, t] = reshaped_spikes
+    
 
     return spikes
 
@@ -125,6 +127,8 @@ def reset_state(model): # resets for new data input
     for m in model.modules():
         if hasattr(m, "v"):
             m.v = None
+        if hasattr(m, "prev_spikes"):
+            m.prev_spikes = None
         if hasattr(m, "pre_trace"):
             m.pre_trace = None
         if hasattr(m, "post_trace"):
@@ -135,15 +139,76 @@ def reset_snn_stats(model): #zeros out spike counts that has "spike_count"
         if hasattr(module, "spike_count"):
             module.spike_count.zero_()
 
-def teach(features, labels, model):
+def reward(features, labels, model):
     assert hasattr(model.reservoir, "stdp_update"), "no STDP functionality available for the model"
     device = next(model.parameters()).device
     features, labels = features.to(device), labels.to(device)
     features = encode_spikes(features)
     reset_state(model)
-    output = model(features, labels, reservoir_stdp = False,  classifier_stdp = True)
+    output, _ = model(features, labels, reservoir_stdp = False,  classifier_stdp = True)
     predicted = torch.argmax(output, dim = 1)
     return predicted, output
+
+
+def validate_separation(model, dataset, args, n_samples=200):
+    """
+    Quickly calculate reservoir separation on a subset of data
+    """
+    device = next(model.parameters()).device
+    # Create a small loader
+    subset_indices = range(min(len(dataset), n_samples))
+    subset = torch.utils.data.Subset(dataset, subset_indices)
+    loader = DataLoader(subset, batch_size=1, shuffle=False)
+    
+    reservoir_states = []
+    state_labels = []
+    
+    print(f"\nValidating Separation Score on {len(subset)} samples...")
+    for features, labels in loader:
+        features, labels = features.to(device), labels.to(device)
+        with torch.no_grad():
+            features = encode_spikes(features)
+            reset_state(model)
+            # We need the reservoir state. The model forward returns (counts, state)
+            _, res_state = model(features, labels=None, reservoir_stdp=False, classifier_stdp=False)
+            reservoir_states.append(res_state.cpu().numpy())
+            state_labels.extend(labels.cpu().numpy())
+            
+    # Calculate stats
+    X = np.vstack(reservoir_states)
+    y = np.array(state_labels)
+    unique_classes = np.unique(y)
+    centers = {}
+    intra_dists = []
+    
+    for c in unique_classes:
+        X_c = X[y == c]
+        if len(X_c) == 0: continue
+        center = X_c.mean(axis=0)
+        centers[c] = center
+        dists = np.linalg.norm(X_c - center, axis=1)
+        intra_dists.extend(dists)
+        
+    if not intra_dists: return
+    
+    mean_intra_dist = np.mean(intra_dists)
+    
+    inter_dists = []
+    classes = list(centers.keys())
+    for i in range(len(classes)):
+        for j in range(i+1, len(classes)):
+            c1 = centers[classes[i]]
+            c2 = centers[classes[j]]
+            inter_dists.append(np.linalg.norm(c1 - c2))
+            
+    if inter_dists:
+        mean_inter_dist = np.mean(inter_dists)
+        separation_score = mean_inter_dist / (mean_intra_dist + 1e-8)
+        print(f"  Mean Intra: {mean_intra_dist:.4f}")
+        print(f"  Mean Inter: {mean_inter_dist:.4f}")
+        print(f"  Separation Score: {separation_score:.4f}")
+    else:
+        print("  Not enough classes for separation score.")
 
 
 def main(args):
@@ -170,6 +235,7 @@ def main(args):
 
     # train
     best_loss = float('inf')
+    best_acc = 0.0
     best_state = None
     stdp_readout = "stdpreadout" in args.model
     if stdp_readout:
@@ -186,56 +252,70 @@ def main(args):
         epoch_preds = []
         epoch_labels = []
         for features,labels in pbar:
-            features, labels = features.to(device), labels.to(device)             
+            features, labels = features.to(device), labels.to(device)            
+            # Track spikes for logging
+            prev_spikes = model.reservoir.spike_count.item()
+            
             if "lif" in args.model and not stdp_readout:
                 features = encode_spikes(features)
                 reset_state(model)
                 predicted = model(features, reservoir_stdp = False)
             elif stdp_readout:
-                pred, output = teach(features, labels, model)
+                pred, output = reward(features, labels, model)
                 epoch_preds.extend(pred.cpu().numpy())
                 epoch_labels.extend(labels.cpu().numpy())
                 loss = None
             else:
                 reset_state(model)
                 predicted = model(features)
+            
+            # Calculate firing rate
+            curr_spikes = model.reservoir.spike_count.item()
+            n_res = model.reservoir.n_reservoir
+            # features is [B, C, T]
+            T_len = features.shape[-1] 
+            # batch_size is features.shape[0], but stdp is 1 usually
+            bs = features.shape[0]
+            firing_rate = (curr_spikes - prev_spikes) / (n_res * T_len * bs)
+
             if not stdp_readout:
                 loss = loss_fn(predicted, labels)
                 loss.backward()
                 optimizer.step()
                 optimizer.zero_grad()
                 epoch_losses.append(loss.item())
-                pbar.set_description(f"Epoch {epoch} Loss {loss.item():.4f}")
+                pbar.set_description(f"Epoch {epoch} Loss {loss.item():.4f} Rate {firing_rate:.3f}")
             else:
-                pbar.set_description(f"Epoch {epoch} Rewarding...")
+                pbar.set_description(f"Epoch {epoch} Rewarding... Rate {firing_rate:.3f}")
         if epoch_losses:
             avg_loss = sum(epoch_losses) / len(epoch_losses)
             if avg_loss < best_loss:
                 best_loss = avg_loss
-                best_state = {k: v.clone() for k, v in model.state_dict().items()}
+                if not stdp_readout:
+                    best_state = {k: v.clone() for k, v in model.state_dict().items()}
             print("Epoch: {}, Loss: {:.4f}".format(epoch, avg_loss))
-        elif stdp_readout and args.val:
-            val_preds = []
-            val_labels = []
-            with torch.no_grad():
-                for features, labels in tqdm(train_loader):
-                    features, labels = features.to(device), labels.to(device)
-                    features = encode_spikes(features)
-                    reset_state(model)
-                    output = model(features, labels=None, reservoir_stdp=False, classifier_stdp=False)
-                    pred = torch.argmax(output, dim=1)
-                    val_preds.extend(pred.cpu().numpy())
-                    val_labels.extend(labels.cpu().numpy())
-            val_acc = accuracy_score(val_labels, val_preds)
-            val_bal_acc = balanced_accuracy_score(val_labels, val_preds)
-            print("Epoch: {}, Val Acc: {:.4f}, Val Bal Acc: {:.4f}".format(epoch, val_acc, val_bal_acc))
-        else:
-            print("Epoch: {}, Loss: N/A".format(epoch))
+        
+        if epoch_preds:
+            train_acc = accuracy_score(epoch_labels, epoch_preds)
+            train_bal_acc = balanced_accuracy_score(epoch_labels, epoch_preds)
+            print("Epoch: {}, Train Acc: {:.4f}, Train Bal Acc: {:.4f}".format(epoch, train_acc, train_bal_acc))
+            
+            if stdp_readout and train_acc > best_acc:
+                best_acc = train_acc
+                best_state = {k: v.clone() for k, v in model.state_dict().items()}
+                print(f"New best accuracy: {best_acc:.4f}")
+        
+        # Validate Separation
+        if stdp_readout:
+             validate_separation(model, train, args)
 
     # load best checkpoint
     if best_state is not None:
         model.load_state_dict(best_state)
-        print("Loaded best checkpoint with loss: {:.4f}".format(best_loss))
+        if stdp_readout:
+            print("Loaded best checkpoint with accuracy: {:.4f}".format(best_acc))
+        else:
+            print("Loaded best checkpoint with loss: {:.4f}".format(best_loss))
 
     # test
     input_spike_total = 0.0
@@ -245,6 +325,7 @@ def main(args):
     all_preds = []
     all_labels = []
     test_losses = []
+    
     tpbar = tqdm(test_loader)
     for batch in tpbar:
         features, labels = batch
@@ -259,7 +340,7 @@ def main(args):
                 features = encode_spikes(features)
                 input_spike_total += features.sum().item()
                 reset_state(model)
-                output = model(features, labels=None, reservoir_stdp=False, classifier_stdp=False)
+                output, _ = model(features, labels=None, reservoir_stdp=False, classifier_stdp=False)
                 pred = torch.argmax(output, dim=1)
                 loss = None
             else:
@@ -274,6 +355,7 @@ def main(args):
         labels_np = labels.cpu().numpy()
         all_preds.extend(preds_cls)
         all_labels.extend(labels_np)
+        
     acc = accuracy_score(all_labels, all_preds)
     bal_acc = balanced_accuracy_score(all_labels, all_preds)
     if test_losses:

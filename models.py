@@ -75,18 +75,36 @@ class ReservoirClassifier(nn.Module):
         predicted = self.classifier(post_spike)
         return predicted
 class ReservoirSTDPReadout(nn.Module):
-    def __init__(self, classes, reservoir, data_channels = 1):
+    def __init__(self, classes, reservoir, n_voters = 1, data_channels = 1):
         super().__init__()
         self.reservoir = reservoir
-        self.classifier = STDPLayer(reservoir.n_reservoir, classes)
+        self.classifiers = nn.ModuleList([STDPLayer(reservoir.n_reservoir, classes) for _ in range(n_voters)])
     def forward(self, x, labels = None, reservoir_stdp = False, classifier_stdp = False):
         B, C, T = x.shape
-        output_spikes = []
+        spike_counts = torch.zeros(B, self.classifiers[0].n_classes, device=x.device)
+        reservoir_spikes_accum = torch.zeros(B, self.reservoir.n_reservoir, device=x.device)
+
         for t in range(T):
             x_t = x[:,:, t]
             reservoir_spike = self.reservoir(x_t, use_stdp = reservoir_stdp)
-            classifier_spike = self.classifier(reservoir_spike, labels, use_stdp = classifier_stdp)
-            output_spikes.append(classifier_spike)
-        output_spikes = torch.stack(output_spikes, dim=1)  # [B, T, n_classes]
-        spike_counts = output_spikes.sum(dim=1)  # [B, n_classes] - total spikes per class
-        return spike_counts
+            reservoir_spikes_accum += reservoir_spike
+            
+            for classifier in self.classifiers:
+                classifier_spike = classifier(reservoir_spike, labels, use_stdp = False)
+                spike_counts += classifier_spike
+        
+        if classifier_stdp:
+            pred = spike_counts.argmax(dim=1)
+            reward = 1.0
+            if labels is not None:
+                if pred[0] == labels[0]:
+                    reward = 1.0
+                else:
+                    reward = -1.0
+            
+            # Pure reward-gated Hebbian update
+            pre_activity = reservoir_spikes_accum[0] / T
+            for classifier in self.classifiers:
+                classifier.stdp_update(pre_activity, pred[0], reward)
+
+        return spike_counts, reservoir_spikes_accum

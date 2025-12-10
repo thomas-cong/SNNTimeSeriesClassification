@@ -78,18 +78,12 @@ class STDPLayer(nn.Module):
         self.register_buffer("post_trace", None)
 
     @torch.no_grad()
-    def stdp_update(self, pre_spikes, post_spikes, reward = 1.0):
-        pre = pre_spikes.squeeze(0)
-        post = post_spikes.squeeze(0)
-        pre_trace = self.pre_trace.squeeze(0)
-        post_trace = self.post_trace.squeeze(0)
-        potentiation = self.a_plus * torch.outer(pre_trace, post)
-        depression = -self.a_minus * torch.outer(pre, post_trace)
-        dW = self.learning_rate * (potentiation + depression) * reward
-        dW = dW - dW.mean(dim=0, keepdim=True)
-        self.W.data = torch.clamp(self.W + dW, min=self.w_min, max=self.w_max)
-        col_norms = self.W.norm(dim=0, keepdim=True) + 1e-8
-        self.W.data = self.W / col_norms * col_norms.mean()
+    def stdp_update(self, pre_activity, winner, reward):
+        # pre_activity: (n_pre,)
+        dw = self.learning_rate * reward * pre_activity.unsqueeze(1)
+
+        self.W[:, winner] += dw[:, 0]
+        self.W.clamp_(self.w_min, self.w_max)
 
     def forward(self, pre_spikes, label = None, use_stdp=False):
         N_pre = pre_spikes.shape[1]
@@ -104,16 +98,33 @@ class STDPLayer(nn.Module):
         decay = torch.exp(torch.tensor(-self.dt / self.tau_mem, device=device))
         self.v = decay * self.v + (1 - decay) * I
         post_spikes = (self.v >= self.v_th).float()
+        
+        # Determine winner for STDP regardless of label presence if we are using STDP
+        pred = None
+        if post_spikes.sum() > 0:
+             pred = post_spikes.sum(dim = 0).argmax()
+        else: # If no spikes but STDP is on, pick random or just 0? Or maybe no winner?
+             # If no spikes, no potentiation anyway (post * mask is 0). Depression might happen.
+             # But if no spikes, post_trace might be non-zero.
+             # Let's say if no spikes, no winner.
+             return post_spikes
+
         if label is not None:   
-            pred = post_spikes.sum(dim = 0).argmax()
+            if pred is None: # handle no spike case
+                 pred = torch.tensor(0, device=device) # default or random?
             reward = 1.0 if pred == label else -1.0
+            
+            # Brain changes most when surprised: only update if prediction is wrong
+            if pred == label:
+                use_stdp = False
+            
         global_activity = post_spikes.sum(dim=1, keepdim=True)
         self.v = self.v - self.lateral_strength * global_activity
         trace_decay = torch.exp(torch.tensor(-self.dt / self.tau_trace, device=device))
         self.pre_trace = trace_decay * self.pre_trace + pre_spikes
         self.post_trace = trace_decay * self.post_trace + post_spikes
-        if use_stdp:
-            self.stdp_update(pre_spikes, post_spikes, reward = reward)
+        if use_stdp and pred is not None:
+            self.stdp_update(pre_spikes.squeeze(0), pred, reward)
         self.v = self.v * (1.0 - post_spikes)
         return post_spikes
 
@@ -131,7 +142,7 @@ class LIFReservoir(nn.Module):
         self.dt = dt
         self.spectral_radius = spectral_radius
         self.v_th = nn.Parameter(
-                        torch.rand(n_reservoir) * 0.1 + 0.1,
+                        torch.rand(n_reservoir) * 0.1 + v_th,
                         requires_grad=False
                     ) # initialize random thresholds for each of the neurons
         self.tau_mem = tau_mem
@@ -140,7 +151,7 @@ class LIFReservoir(nn.Module):
         self.register_buffer("spike_count", torch.tensor(0.0), persistent=False) # for logging number of spikes
         # input to reservoir weight
         # no grad since fixed
-        self.W_in = nn.Parameter(torch.randn(n_in, n_reservoir) * 1.5, requires_grad=False)
+        self.W_in = nn.Parameter(torch.randn(n_in, n_reservoir) * 8.0, requires_grad=False)
 
 
         # random weights for reservoir
@@ -161,6 +172,7 @@ class LIFReservoir(nn.Module):
         self.W_rec = nn.Parameter(W_rec, requires_grad=False)
         # state vector
         self.register_buffer("v", None)
+        self.register_buffer("prev_spikes", None)
         self.register_buffer("I_bias", 0.05 * torch.randn(n_reservoir)) # add a slight random bias
 
 
@@ -168,10 +180,11 @@ class LIFReservoir(nn.Module):
         device = pre_spikes.device
         if self.v is None:
             self.v = torch.zeros(1, self.n_reservoir, device=device)
+            self.prev_spikes = torch.zeros(1, self.n_reservoir, device=device)
         # input current
         I_in = pre_spikes @ self.W_in
         # current within the reservoir
-        I_rec = self.v @ self.W_rec
+        I_rec = self.prev_spikes @ self.W_rec
         # total current to each neuron
         I_total = I_in + I_rec + self.I_bias
         # decay term in LIF equation
@@ -184,6 +197,7 @@ class LIFReservoir(nn.Module):
         self.v = self.v * (1.0 - post_spikes)
         self.spike_count += post_spikes.detach().sum() #logging number of spikes
         # update state to reset to 0 if spiked
+        self.prev_spikes = post_spikes
 
         return post_spikes
 
@@ -191,9 +205,9 @@ class STDPReservoir(LIFReservoir):
     def __init__(self, n_in, n_reservoir,
                  tau_trace = 2e-2,
                  dt=1e-3,
-                 v_th = 0.5, 
-                 tau_mem = 1e-2,
-                 sparsity = 0.2,
+                 v_th = 0.15, 
+                 tau_mem = 2e-2,
+                 sparsity = 0.1,
                  spectral_radius = 0.9,
                  target_rate = 0.1,
                  eta_ip = 1e-3,
@@ -242,8 +256,9 @@ class STDPReservoir(LIFReservoir):
         device = pre_spikes.device
         if self.v is None:
             self.v = torch.zeros(1, self.n_reservoir, device=device)
+            self.prev_spikes = torch.zeros(1, self.n_reservoir, device=device)
         I_in = pre_spikes @ self.W_in
-        I_rec = self.v @ self.W_rec
+        I_rec = self.prev_spikes @ self.W_rec
         I_total = I_in + I_rec
         decay = torch.exp(torch.tensor(-self.dt / self.tau_mem, device=device))
         self.v = decay * self.v + (1 - decay) * I_total
@@ -260,6 +275,7 @@ class STDPReservoir(LIFReservoir):
             self.stdp_update(spikes)
             self.intrinsic_plasticity(spikes)
         self.v = self.v * (1.0 - post_spikes)
+        self.prev_spikes = post_spikes
         return post_spikes
 
 if __name__ == "__main__":
