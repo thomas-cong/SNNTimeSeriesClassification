@@ -228,6 +228,12 @@ def main(args):
                 epoch_preds.extend(pred.cpu().numpy())
                 epoch_labels.extend(labels.cpu().numpy())
                 loss = None
+                
+                # Calculate readout firing rate
+                readout_spikes = output.sum().item()
+                T_len = features.shape[-1]
+                bs = features.shape[0]
+                readout_rate = readout_spikes / (args.n_voters * args.classes * T_len * bs)
             else:
                 reset_state(model)
                 predicted = model(features)
@@ -249,7 +255,7 @@ def main(args):
                 epoch_losses.append(loss.item())
                 pbar.set_description(f"Epoch {epoch} Loss {loss.item():.4f}")
             else:
-                pbar.set_description(f"Epoch {epoch} Rewarding... Rate {firing_rate:.3f}")
+                pbar.set_description(f"Epoch {epoch} Rewarding... Res Rate {firing_rate:.3f} | Readout Rate {readout_rate:.3f}")
         if epoch_losses:
             avg_loss = sum(epoch_losses) / len(epoch_losses)
             if avg_loss < best_loss:
