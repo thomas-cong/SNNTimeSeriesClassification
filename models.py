@@ -78,9 +78,18 @@ class ReservoirSTDPReadout(nn.Module):
     def __init__(self, classes, reservoir, n_voters=1, data_channels=1):
         super().__init__()
         self.reservoir = reservoir
+        self.n_classes = classes
         self.classifiers = nn.ModuleList([
             STDPLayer(reservoir.n_reservoir, classes) for _ in range(n_voters)
         ])
+        self.register_buffer("neuron_labels", None)
+
+    def _reset_state(self):
+        self.reservoir.v = None
+        self.reservoir.prev_spikes = None
+        for clf in self.classifiers:
+            clf.v = None
+            clf.eligibility = None
 
     def forward(self, x, labels=None, reservoir_stdp=False, classifier_stdp=False):
         """
@@ -108,29 +117,44 @@ class ReservoirSTDPReadout(nn.Module):
 
         # STDP update for readout (sequence-level)
         if classifier_stdp:
-            # Prediction from spike counts
-            pred = spike_counts.argmax(dim=1)  # (B,)
-
-            # Reward: +1 for correct, -0.1 for incorrect
-            if labels is not None:
-                reward = torch.where(
-                    pred == labels,
-                    torch.ones_like(labels, dtype=torch.float, device=device),
-                    -0.1 * torch.ones_like(labels, dtype=torch.float, device=device)
-                )
-            else:
-                reward = torch.ones(B, device=device)
-
-            # Winner mask: one-hot over classes
-            winner_mask = torch.zeros(B, self.classifiers[0].n_classes, device=device)
-            winner_mask[torch.arange(B), pred] = 1.0  # (B, n_classes)
-
-            # Call stdp_update on each classifier
             for clf in self.classifiers:
-                clf.stdp_update(
-                    pre_activity=None,           # unused in your STDPLayer
-                    winner_mask=winner_mask,     # (B, n_classes)
-                    reward=reward                # (B,)
-                )
+                clf.stdp_update()
 
         return spike_counts, reservoir_spikes_accum
+
+    @torch.no_grad()
+    def label_neurons(self, data_loader, encode_fn):
+        """Phase 2: Label each neuron by its preferred class."""
+        device = next(self.parameters()).device
+        n_neurons = self.classifiers[0].n_classes
+        responses = torch.zeros(self.n_classes, n_neurons, device=device)
+        counts = torch.zeros(self.n_classes, device=device)
+
+        for features, labels in data_loader:
+            features, labels = features.to(device), labels.to(device)
+            features = encode_fn(features)
+            self._reset_state()
+            spike_counts, _ = self.forward(features, classifier_stdp=False)
+            for c in range(self.n_classes):
+                mask = (labels == c)
+                if mask.sum() > 0:
+                    responses[c] += spike_counts[mask].sum(dim=0)
+                    counts[c] += mask.sum()
+
+        for c in range(self.n_classes):
+            if counts[c] > 0:
+                responses[c] /= counts[c]
+
+        self.neuron_labels = responses.argmax(dim=0)
+        print(f"Neuron labels: {self.neuron_labels}")
+
+    def predict(self, spike_counts):
+        """Phase 3: Predict using labeled neurons via majority vote."""
+        if self.neuron_labels is None:
+            return spike_counts.argmax(dim=1)
+        B = spike_counts.shape[0]
+        votes = torch.zeros(B, self.n_classes, device=spike_counts.device)
+        for c in range(self.n_classes):
+            mask = (self.neuron_labels == c)
+            votes[:, c] = spike_counts[:, mask].sum(dim=1)
+        return votes.argmax(dim=1)

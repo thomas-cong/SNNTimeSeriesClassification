@@ -100,11 +100,15 @@ class STDPLayer(nn.Module):
         if raw_spikes.sum() > 1:
             winner = torch.argmax(self.v, dim=1)
             post_spikes = torch.zeros_like(raw_spikes)
-            post_spikes[0, winner] = 1.0
+            post_spikes[torch.arange(B), winner] = 1.0
         else:
             post_spikes = raw_spikes
 
-        # Eligibility trace update (core fix)
+        # Lateral inhibition
+        global_activity = post_spikes.sum(dim=1, keepdim=True)
+        self.v -= self.lateral_strength * global_activity
+
+        # Eligibility trace update
         trace_decay = torch.exp(torch.tensor(-self.dt / self.tau_trace, device=device))
         self.eligibility *= trace_decay
         self.eligibility += pre_spikes.unsqueeze(2) * post_spikes.unsqueeze(1)
@@ -115,30 +119,13 @@ class STDPLayer(nn.Module):
         return post_spikes
 
     @torch.no_grad()
-    def stdp_update(self, pre_activity, winner_mask, reward):
-
-        if isinstance(reward, float) or reward.dim() == 0:
-            reward = reward * torch.ones(
-                self.eligibility.shape[0], device=self.eligibility.device
-            )
-
-        # winner_mask: (B, n_classes)
-        # eligibility:  (B, n_pre, n_classes)
-
-        if winner_mask is not None:
-            # --- 1. Winner-only LTP ---
-            masked_eligibility = self.eligibility * winner_mask.unsqueeze(1)
-
-            dW = self.learning_rate * torch.mean(
-                reward.view(-1, 1, 1) * masked_eligibility,
-                dim=0
-            )
-        else:
-            # No competition — pure reward STDP (not recommended)
-            dW = self.learning_rate * torch.mean(
-                reward.view(-1, 1, 1) * self.eligibility, dim=0
-            )
-
+    def stdp_update(self):
+        """
+        Pure STDP update using eligibility traces.
+        """
+        # Pure STDP: use accumulated eligibility traces directly
+        dW = self.learning_rate * torch.mean(self.eligibility, dim=0)
+        
         self.W += dW
         self.W.clamp_(self.w_min, self.w_max)
 

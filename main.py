@@ -141,15 +141,13 @@ def reset_snn_stats(model): #zeros out spike counts that has "spike_count"
         if hasattr(module, "spike_count"):
             module.spike_count.zero_()
 
-def reward(features, labels, model):
-    assert hasattr(model.reservoir, "stdp_update"), "no STDP functionality available for the model"
+def readout_stdp(features, labels, model):
     device = next(model.parameters()).device
     features, labels = features.to(device), labels.to(device)
     features = encode_spikes(features)
     reset_state(model)
-    output, _ = model(features, labels, reservoir_stdp = False,  classifier_stdp = True)
-    predicted = torch.argmax(output, dim = 1)
-    return predicted, output
+    output, _ = model(features, labels, reservoir_stdp=False, classifier_stdp=True)
+    return output
 
 
 def save_weight_matrix_heatmap(model, path="reservoir_weights.png"):
@@ -195,97 +193,66 @@ def main(args):
     best_acc = 0.0
     best_state = None
     stdp_readout = "stdpreadout" in args.model
-    if stdp_readout:
-        print("Not using loss: STDP readout via reward mechanism")
-    for epoch in range(args.epochs):
-        if epoch == 0 and "stdp" in args.model:
-            if not (args.reservoir_path and os.path.exists(args.reservoir_path)):
-                for i in range(args.stdp_passes):
-                    pbar = tqdm(train_loader)
-                    stdp_train(model, pbar, freeze = (i == args.stdp_passes - 1))
-                save_reservoir(model.reservoir, args.reservoir_path)
-                
-                # Save weight visualization after STDP training
-                if hasattr(model.reservoir, "W_rec"):
-                     save_weight_matrix_heatmap(model, "reservoir_weights_after_stdp.png")
-                     
-        pbar = tqdm(train_loader)
-        epoch_losses = []
-        epoch_preds = []
-        epoch_labels = []
-        for features,labels in pbar:
-            features, labels = features.to(device), labels.to(device)            
-            # Track spikes for logging
-            if "lif" in args.model:
-                prev_spikes = model.reservoir.spike_count.item()
-            
-            if "lif" in args.model and not stdp_readout:
-                features = encode_spikes(features)
-                reset_state(model)
-                predicted = model(features, reservoir_stdp = False)
-            elif stdp_readout:
-                pred, output = reward(features, labels, model)
-                epoch_preds.extend(pred.cpu().numpy())
-                epoch_labels.extend(labels.cpu().numpy())
-                loss = None
-                
-                # Calculate readout firing rate
-                readout_spikes = output.sum().item()
-                T_len = features.shape[-1]
-                bs = features.shape[0]
-                readout_rate = readout_spikes / (args.n_voters * args.classes * T_len * bs)
-            else:
-                reset_state(model)
-                predicted = model(features)
-            if "lif" in args.model:
-                # Calculate firing rate
-                curr_spikes = model.reservoir.spike_count.item()
-                n_res = model.reservoir.n_reservoir
-                # features is [B, C, T]
-                T_len = features.shape[-1] 
-                # batch_size is features.shape[0], but stdp is 1 usually
-                bs = features.shape[0]
-                firing_rate = (curr_spikes - prev_spikes) / (n_res * T_len * bs)
+    if not stdp_readout:
+        for epoch in range(args.epochs):
+            if epoch == 0 and "stdp" in args.model:
+                if not (args.reservoir_path and os.path.exists(args.reservoir_path)):
+                    for i in range(args.stdp_passes):
+                        pbar = tqdm(train_loader)
+                        stdp_train(model, pbar, freeze = (i == args.stdp_passes - 1))
+                    save_reservoir(model.reservoir, args.reservoir_path)
+                    
+                    if hasattr(model.reservoir, "W_rec"):
+                         save_weight_matrix_heatmap(model, "reservoir_weights_after_stdp.png")
+                         
+            pbar = tqdm(train_loader)
+            epoch_losses = []
+            for features,labels in pbar:
+                features, labels = features.to(device), labels.to(device)            
+                if "lif" in args.model:
+                    features = encode_spikes(features)
+                    reset_state(model)
+                    predicted = model(features, reservoir_stdp = False)
+                else:
+                    reset_state(model)
+                    predicted = model(features)
 
-            if not stdp_readout:
                 loss = loss_fn(predicted, labels)
                 loss.backward()
                 optimizer.step()
                 optimizer.zero_grad()
                 epoch_losses.append(loss.item())
                 pbar.set_description(f"Epoch {epoch} Loss {loss.item():.4f}")
-            else:
-                pbar.set_description(f"Epoch {epoch} Rewarding... Res Rate {firing_rate:.3f} | Readout Rate {readout_rate:.3f}")
-        if epoch_losses:
-            avg_loss = sum(epoch_losses) / len(epoch_losses)
-            if avg_loss < best_loss:
-                best_loss = avg_loss
-                if not stdp_readout:
+            if epoch_losses:
+                avg_loss = sum(epoch_losses) / len(epoch_losses)
+                if avg_loss < best_loss:
+                    best_loss = avg_loss
                     best_state = {k: v.clone() for k, v in model.state_dict().items()}
-            print("Epoch: {}, Loss: {:.4f}".format(epoch, avg_loss))
-        
-        if epoch_preds:
-            train_acc = accuracy_score(epoch_labels, epoch_preds)
-            train_bal_acc = balanced_accuracy_score(epoch_labels, epoch_preds)
-            print("Epoch: {}, Train Acc: {:.4f}, Train Bal Acc: {:.4f}".format(epoch, train_acc, train_bal_acc))
-            
-            if stdp_readout and train_acc > best_acc:
-                best_acc = train_acc
-                best_state = {k: v.clone() for k, v in model.state_dict().items()}
-                print(f"New best accuracy: {best_acc:.4f}")
+                print("Epoch: {}, Loss: {:.4f}".format(epoch, avg_loss))
 
-    # load best checkpoint
-    if best_state is not None:
-        model.load_state_dict(best_state)
-        if stdp_readout:
-            print("Loaded best checkpoint with accuracy: {:.4f}".format(best_acc))
-        else:
+        if best_state is not None:
+            model.load_state_dict(best_state)
             print("Loaded best checkpoint with loss: {:.4f}".format(best_loss))
 
     # test
     input_spike_total = 0.0
     if "lif" in args.model: # counts input spikes and resets SNN stats
         reset_snn_stats(model)
+    if stdp_readout:
+        print("=== Phase 1: Unsupervised STDP Training ===")
+        for epoch in range(args.epochs):
+            pbar = tqdm(train_loader, desc=f"STDP Epoch {epoch}")
+            for features, labels in pbar:
+                features = features.to(device)
+                features = encode_spikes(features)
+                reset_state(model)
+                model(features, classifier_stdp=True)
+        
+        print("=== Phase 2: Neuron Labeling ===")
+        model.label_neurons(train_loader, encode_spikes)
+        
+        print("=== Phase 3: Inference ===")
+
     test_loader = DataLoader(test, batch_size = args.batch_size)
     all_preds = []
     all_labels = []
@@ -306,7 +273,7 @@ def main(args):
                 input_spike_total += features.sum().item()
                 reset_state(model)
                 output, _ = model(features, labels=None, reservoir_stdp=False, classifier_stdp=False)
-                pred = torch.argmax(output, dim=1)
+                pred = model.predict(output)
                 loss = None
             else:
                 reset_state(model)
