@@ -150,67 +150,6 @@ def reward(features, labels, model):
     return predicted, output
 
 
-def validate_separation(model, dataset, args, n_samples=200):
-    """
-    Quickly calculate reservoir separation on a subset of data
-    """
-    device = next(model.parameters()).device
-    # Create a small loader
-    subset_indices = range(min(len(dataset), n_samples))
-    subset = torch.utils.data.Subset(dataset, subset_indices)
-    loader = DataLoader(subset, batch_size=1, shuffle=False)
-    
-    reservoir_states = []
-    state_labels = []
-    
-    print(f"\nValidating Separation Score on {len(subset)} samples...")
-    for features, labels in loader:
-        features, labels = features.to(device), labels.to(device)
-        with torch.no_grad():
-            features = encode_spikes(features)
-            reset_state(model)
-            # We need the reservoir state. The model forward returns (counts, state)
-            _, res_state = model(features, labels=None, reservoir_stdp=False, classifier_stdp=False)
-            reservoir_states.append(res_state.cpu().numpy())
-            state_labels.extend(labels.cpu().numpy())
-            
-    # Calculate stats
-    X = np.vstack(reservoir_states)
-    y = np.array(state_labels)
-    unique_classes = np.unique(y)
-    centers = {}
-    intra_dists = []
-    
-    for c in unique_classes:
-        X_c = X[y == c]
-        if len(X_c) == 0: continue
-        center = X_c.mean(axis=0)
-        centers[c] = center
-        dists = np.linalg.norm(X_c - center, axis=1)
-        intra_dists.extend(dists)
-        
-    if not intra_dists: return
-    
-    mean_intra_dist = np.mean(intra_dists)
-    
-    inter_dists = []
-    classes = list(centers.keys())
-    for i in range(len(classes)):
-        for j in range(i+1, len(classes)):
-            c1 = centers[classes[i]]
-            c2 = centers[classes[j]]
-            inter_dists.append(np.linalg.norm(c1 - c2))
-            
-    if inter_dists:
-        mean_inter_dist = np.mean(inter_dists)
-        separation_score = mean_inter_dist / (mean_intra_dist + 1e-8)
-        print(f"  Mean Intra: {mean_intra_dist:.4f}")
-        print(f"  Mean Inter: {mean_inter_dist:.4f}")
-        print(f"  Separation Score: {separation_score:.4f}")
-    else:
-        print("  Not enough classes for separation score.")
-
-
 def main(args):
     print("Args: ", args)
     if "stdp" in args.model:
@@ -304,10 +243,6 @@ def main(args):
                 best_acc = train_acc
                 best_state = {k: v.clone() for k, v in model.state_dict().items()}
                 print(f"New best accuracy: {best_acc:.4f}")
-        
-        # Validate Separation
-        if stdp_readout:
-             validate_separation(model, train, args)
 
     # load best checkpoint
     if best_state is not None:

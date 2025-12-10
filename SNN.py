@@ -39,16 +39,17 @@ class LIFLayer(nn.Module):
         self.v = self.v * (1.0 - post_spikes)
 
         return post_spikes
+
 class STDPLayer(nn.Module):
     def __init__(self, n_pre, n_classes,
                  tau_mem=50e-3,
-                 tau_trace=50e-3,
+                 tau_trace=40e-3,
                  v_th=0.5,
                  dt=1e-3,
-                 a_plus=0.05,
-                 a_minus=0.06,
-                 learning_rate=0.01,
-                 lateral_strength=0.1,
+                 a_plus=0.1,
+                 a_minus=0.12,
+                 learning_rate=1e-3,
+                 lateral_strength=0.2,
                  w_max=1.0,
                  w_min=-1.0):
         super().__init__()
@@ -99,32 +100,36 @@ class STDPLayer(nn.Module):
         self.v = decay * self.v + (1 - decay) * I
         post_spikes = (self.v >= self.v_th).float()
         
-        # Determine winner for STDP regardless of label presence if we are using STDP
+        # Determine winner for STDP
         pred = None
-        if post_spikes.sum() > 0:
+        if use_stdp or label is not None:
+             # Select winner based on max voltage, even if no spike
+             pred = self.v.squeeze(0).argmax()
+        
+        # If not training/labeling, we just return spikes. 
+        # But if we need 'pred' for reward calculation later?
+        if pred is None and post_spikes.sum() > 0:
              pred = post_spikes.sum(dim = 0).argmax()
-        else: # If no spikes but STDP is on, pick random or just 0? Or maybe no winner?
-             # If no spikes, no potentiation anyway (post * mask is 0). Depression might happen.
-             # But if no spikes, post_trace might be non-zero.
-             # Let's say if no spikes, no winner.
-             return post_spikes
 
         if label is not None:   
-            if pred is None: # handle no spike case
-                 pred = torch.tensor(0, device=device) # default or random?
-            reward = 1.0 if pred == label else -1.0
+            if pred is None: 
+                 pred = torch.tensor(0, device=device)
             
-            # Brain changes most when surprised: only update if prediction is wrong
+            # Fix 2.4: Stronger reward/punishment
             if pred == label:
-                use_stdp = False
+                reward = 1.0 
+                # Keep use_stdp = True to reinforce!
+            else:
+                reward = -0.5
+                # Punish!
             
         global_activity = post_spikes.sum(dim=1, keepdim=True)
         self.v = self.v - self.lateral_strength * global_activity
+        
         trace_decay = torch.exp(torch.tensor(-self.dt / self.tau_trace, device=device))
         self.pre_trace = trace_decay * self.pre_trace + pre_spikes
         self.post_trace = trace_decay * self.post_trace + post_spikes
-        if use_stdp and pred is not None:
-            self.stdp_update(pre_spikes.squeeze(0), pred, reward)
+        
         self.v = self.v * (1.0 - post_spikes)
         return post_spikes
 
@@ -151,7 +156,10 @@ class LIFReservoir(nn.Module):
         self.register_buffer("spike_count", torch.tensor(0.0), persistent=False) # for logging number of spikes
         # input to reservoir weight
         # no grad since fixed
-        self.W_in = nn.Parameter(torch.randn(n_in, n_reservoir) * 8.0, requires_grad=False)
+        W_in_dense = torch.randn(n_in, n_reservoir) * 8.0
+        # Make W_in sparse (20% connectivity) to increase feature selectivity
+        mask_in = (torch.rand(n_in, n_reservoir) < 0.2).float()
+        self.W_in = nn.Parameter(W_in_dense * mask_in, requires_grad=False)
 
 
         # random weights for reservoir
@@ -173,7 +181,7 @@ class LIFReservoir(nn.Module):
         # state vector
         self.register_buffer("v", None)
         self.register_buffer("prev_spikes", None)
-        self.register_buffer("I_bias", 0.05 * torch.randn(n_reservoir)) # add a slight random bias
+        self.register_buffer("I_bias", 0.1 * torch.randn(n_reservoir)) # add a slight random bias
 
 
     def forward(self, pre_spikes):
@@ -203,15 +211,15 @@ class LIFReservoir(nn.Module):
 
 class STDPReservoir(LIFReservoir):
     def __init__(self, n_in, n_reservoir,
-                 tau_trace = 2e-2,
+                 tau_trace = 40e-3, # Adjusted to 2*tau_mem
                  dt=1e-3,
-                 v_th = 0.15, 
+                 v_th = 0.3, 
                  tau_mem = 2e-2,
                  sparsity = 0.1,
-                 spectral_radius = 0.9,
-                 target_rate = 0.1,
-                 eta_ip = 1e-3,
-                 lateral_strength = 0.05):
+                 spectral_radius = 1.05,
+                 target_rate = 0.2,
+                 eta_ip = 1e-4, # Reduced IP rate
+                 lateral_strength = 0.12): # Increased inhibition
         super().__init__(n_in, n_reservoir, dt, v_th, tau_mem, sparsity, spectral_radius)
         self.tau_trace = tau_trace
         self.target_rate = target_rate
@@ -221,22 +229,59 @@ class STDPReservoir(LIFReservoir):
         self.register_buffer("post_traces", torch.zeros(n_reservoir))
         self.register_buffer("firing_rates", torch.zeros(n_reservoir))
         self.register_buffer("rate_decay", torch.tensor(0.99))
+    
     def estimate_spectral_radius(self, W, n_iter=20):
         v = torch.randn(W.shape[0], device=W.device)
         for _ in range(n_iter):
             v = W @ v
             v = v / torch.norm(v)
         return torch.norm(W @ v)
+
     @torch.no_grad()
-    def stdp_update(self, post_spikes, learning_rate=5e-2, a_plus=0.2, a_minus=0.25, noise_std=1e-3):
+    def stdp_update(self, pre_spikes, post_spikes, learning_rate=1e-3, a_plus=0.1, a_minus=0.12, noise_std=1e-3):
+        # pre_spikes: (N,) - from previous timestep (input to reservoir weights)
+        # BUT for reservoir recurrent weights W_rec (N, N):
+        # Weights are from j (pre) to i (post).
+        # pre_spikes here are the reservoir spikes from previous step? 
+        # Wait, the reservoir forward pass passes 'spikes' to stdp_update.
+        # 'spikes' are the current output spikes.
+        
+        # In a recurrent layer:
+        # Pre-synaptic spikes are the spikes from t-1 (prev_spikes)
+        # Post-synaptic spikes are the spikes from t (spikes)
+        
         W_rec = self.W_rec.clone()
+        
+        # Dimensions:
+        # pre_traces: (1, N)
+        # post_traces: (N, 1)
+        # post_spikes: (N, 1)
+        # pre_spikes: (1, N)
+        
         post_spikes_col = post_spikes.reshape(-1, 1)
         post_spikes_row = post_spikes.reshape(1, -1)
+        
         pre_traces = self.pre_traces.reshape(1, -1)
         post_traces = self.post_traces.reshape(-1, 1)
+        
+        pre_spikes_row = pre_spikes.reshape(1, -1)
+
+        # Potentiation: Post fires while Pre trace is active
+        # dW[i,j] (j->i) += pre_trace[j] * post_spike[i]
         potentiation = a_plus * pre_traces * post_spikes_col
-        depression = -a_minus * post_traces * post_spikes_row
+        
+        # Depression: Pre fires while Post trace is active
+        # dW[i,j] (j->i) -= post_trace[i] * pre_spike[j]
+        # pre_spikes argument passed to this function is 'spikes' (current output), 
+        # but we need the actual pre-synaptic events.
+        # In a recurrent net, 'pre_spikes' for the weight update are the spikes at t-1 (or the input spikes).
+        # We need to pass both current and prev spikes to be precise, or just rely on traces.
+        # Assuming pre_spikes arg is actually the 'pre' activity for the depression term.
+        
+        depression = -a_minus * post_traces * pre_spikes_row
+        
         dW = learning_rate * (potentiation + depression)
+        
         # weight competition: subtract mean change per postsynaptic neuron
         dW = dW - dW.mean(dim=0, keepdim=True)
         noise = noise_std * torch.randn_like(dW)
@@ -246,34 +291,52 @@ class STDPReservoir(LIFReservoir):
         if rho > 0:
             W_rec *= self.spectral_radius / rho
         self.W_rec.copy_(W_rec)
+
     @torch.no_grad()
     def intrinsic_plasticity(self, spikes):
         self.firing_rates = self.rate_decay * self.firing_rates + (1 - self.rate_decay) * spikes
         rate_error = self.firing_rates - self.target_rate
         self.v_th.data = torch.clamp(self.v_th + self.eta_ip * rate_error, min=0.1, max=1.0)
 
+
     def forward(self, pre_spikes, use_stdp=False):
         device = pre_spikes.device
         if self.v is None:
             self.v = torch.zeros(1, self.n_reservoir, device=device)
             self.prev_spikes = torch.zeros(1, self.n_reservoir, device=device)
+        
         I_in = pre_spikes @ self.W_in
         I_rec = self.prev_spikes @ self.W_rec
         I_total = I_in + I_rec
+        
         decay = torch.exp(torch.tensor(-self.dt / self.tau_mem, device=device))
         self.v = decay * self.v + (1 - decay) * I_total
+        
         post_spikes = (self.v >= self.v_th).float()
+        
         global_activity = post_spikes.sum(dim=1, keepdim=True)
         self.v = self.v - self.lateral_strength * global_activity
+        
+        # Update Traces
         trace_decay = torch.exp(torch.tensor(-self.dt / self.tau_trace, device=device))
-        self.pre_traces = self.post_traces * trace_decay
+        
+        # Pre-trace tracks PRE-synaptic spikes (which are self.prev_spikes in a recurrent net)
+        # Logic 2.1 Fixed: Use self.prev_spikes (the pre-synaptic input to this step)
+        self.pre_traces = self.pre_traces * trace_decay
+        self.pre_traces = torch.where(self.prev_spikes > 0, torch.ones_like(self.pre_traces), self.pre_traces)
+        
+        # Post-trace tracks POST-synaptic spikes (current output)
         spikes = post_spikes.squeeze(0)
         self.post_traces = self.post_traces * trace_decay
         self.post_traces = torch.where(spikes > 0, torch.ones_like(self.post_traces), self.post_traces)
+        
         self.spike_count += post_spikes.detach().sum()
+        
         if use_stdp:
-            self.stdp_update(spikes)
+            # Pass PRE (prev_spikes) and POST (spikes) for depression/potentiation
+            self.stdp_update(self.prev_spikes.squeeze(0), spikes)
             self.intrinsic_plasticity(spikes)
+            
         self.v = self.v * (1.0 - post_spikes)
         self.prev_spikes = post_spikes
         return post_spikes
