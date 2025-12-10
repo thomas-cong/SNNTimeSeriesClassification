@@ -75,36 +75,57 @@ class ReservoirClassifier(nn.Module):
         predicted = self.classifier(post_spike)
         return predicted
 class ReservoirSTDPReadout(nn.Module):
-    def __init__(self, classes, reservoir, n_voters = 1, data_channels = 1):
+    def __init__(self, classes, reservoir, n_voters=10, data_channels=1):
         super().__init__()
         self.reservoir = reservoir
-        self.classifiers = nn.ModuleList([STDPLayer(reservoir.n_reservoir, classes) for _ in range(n_voters)])
-    def forward(self, x, labels = None, reservoir_stdp = False, classifier_stdp = False):
-        B, C, T = x.shape
-        spike_counts = torch.zeros(B, self.classifiers[0].n_classes, device=x.device)
-        reservoir_spikes_accum = torch.zeros(B, self.reservoir.n_reservoir, device=x.device)
+        self.classifiers = nn.ModuleList(
+            [STDPLayer(reservoir.n_reservoir, classes) for _ in range(n_voters)]
+        )
 
+    def forward(self, x, labels=None, reservoir_stdp=False, classifier_stdp=False):
+        """
+        Returns:
+            spike_counts: (B, classes)
+            reservoir_spikes_accum: (B, n_reservoir)
+        """
+        B, C, T = x.shape
+        device = x.device
+
+        spike_counts = torch.zeros(
+            B, self.classifiers[0].n_classes, device=device
+        )
+        reservoir_spikes_accum = torch.zeros(
+            B, self.reservoir.n_reservoir, device=device
+        )
+
+        # Reset states
+        self.reservoir.v = None
+        self.reservoir.prev_spikes = None
+        for clf in self.classifiers:
+            clf.v = None
+            clf.eligibility = None
+
+        # Run full sequence
         for t in range(T):
-            x_t = x[:,:, t]
-            reservoir_spike = self.reservoir(x_t, use_stdp = reservoir_stdp)
+            x_t = x[:, :, t]
+            reservoir_spike = self.reservoir(x_t, use_stdp=reservoir_stdp)
             reservoir_spikes_accum += reservoir_spike
-            
+
             for classifier in self.classifiers:
-                classifier_spike = classifier(reservoir_spike, labels, use_stdp = False)
+                classifier_spike = classifier(reservoir_spike, labels, use_stdp=False)
                 spike_counts += classifier_spike
-        
-        if classifier_stdp:
+
+        # Apply reward-gated STDP ONCE per sequence
+        if classifier_stdp and labels is not None:
             pred = spike_counts.argmax(dim=1)
-            reward = 1.0
-            if labels is not None:
-                if pred[0] == labels[0]:
-                    reward = 1.0
-                else:
-                    reward = -1.0
-            
-            # Pure reward-gated Hebbian update
-            pre_activity = reservoir_spikes_accum[0] / T
+            reward = torch.where(
+                pred == labels,
+                torch.ones_like(labels, dtype=torch.float),
+                -torch.ones_like(labels, dtype=torch.float),
+            )
+
             for classifier in self.classifiers:
-                classifier.stdp_update(pre_activity, pred[0], reward)
+                classifier.stdp_update(None, None, reward)
 
         return spike_counts, reservoir_spikes_accum
+

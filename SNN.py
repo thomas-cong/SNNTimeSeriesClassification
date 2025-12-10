@@ -43,13 +43,13 @@ class LIFLayer(nn.Module):
 class STDPLayer(nn.Module):
     def __init__(self, n_pre, n_classes,
                  tau_mem=50e-3,
-                 tau_trace=40e-3,
+                 tau_trace=50e-3,
                  v_th=0.5,
-                 dt=1e-3,
-                 a_plus=0.1,
-                 a_minus=0.12,
+                 dt=1e-2,
+                 a_plus=0.1,     # kept for compatibility
+                 a_minus=0.12,   # kept for compatibility
                  learning_rate=1e-3,
-                 lateral_strength=0.2,
+                 lateral_strength=0.1,
                  w_max=1.0,
                  w_min=-1.0):
         super().__init__()
@@ -58,80 +58,78 @@ class STDPLayer(nn.Module):
         self.dt = dt
         self.tau_mem = tau_mem
         self.tau_trace = tau_trace
-        self.a_plus = a_plus
-        self.a_minus = a_minus
         self.learning_rate = learning_rate
         self.lateral_strength = lateral_strength
         self.w_max = w_max
         self.w_min = w_min
 
         self.W = nn.Parameter(
-            torch.rand(n_pre, n_classes) * 0.5 + 0.2,
+            torch.randn(n_pre, n_classes) * 0.2,
             requires_grad=False
         )
+
         self.v_th = nn.Parameter(
-            torch.rand(n_classes) * 0.1 + 0.1,
+            torch.ones(n_classes) * v_th,
             requires_grad=False
         )
 
         self.register_buffer("v", None)
-        self.register_buffer("pre_trace", None)
-        self.register_buffer("post_trace", None)
+        self.register_buffer("eligibility", None)
 
-    @torch.no_grad()
-    def stdp_update(self, pre_activity, winner, reward):
-        # pre_activity: (n_pre,)
-        dw = self.learning_rate * reward * pre_activity.unsqueeze(1)
+    def _reset_state(self, B, device):
+        self.v = torch.zeros(B, self.n_classes, device=device)
+        self.eligibility = torch.zeros(B, self.n_pre, self.n_classes, device=device)
 
-        self.W[:, winner] += dw[:, 0]
-        self.W.clamp_(self.w_min, self.w_max)
-
-    def forward(self, pre_spikes, label = None, use_stdp=False):
-        N_pre = pre_spikes.shape[1]
+    def forward(self, pre_spikes, label=None, use_stdp=False):
+        """
+        pre_spikes: (B, n_pre)
+        returns: post_spikes (B, n_classes)
+        """
+        B = pre_spikes.shape[0]
         device = pre_spikes.device
-        reward = 1.0
-        if self.v is None:
-            self.v = torch.zeros(1, self.n_classes, device=device)
-            self.pre_trace = torch.zeros(1, N_pre, device=device)
-            self.post_trace = torch.zeros(1, self.n_classes, device=device)
 
+        if self.v is None:
+            self._reset_state(B, device)
+
+        # LIF membrane dynamics
         I = pre_spikes @ self.W
         decay = torch.exp(torch.tensor(-self.dt / self.tau_mem, device=device))
         self.v = decay * self.v + (1 - decay) * I
-        post_spikes = (self.v >= self.v_th).float()
-        
-        # Determine winner for STDP
-        pred = None
-        if use_stdp or label is not None:
-             # Select winner based on max voltage, even if no spike
-             pred = self.v.squeeze(0).argmax()
-        
-        # If not training/labeling, we just return spikes. 
-        # But if we need 'pred' for reward calculation later?
-        if pred is None and post_spikes.sum() > 0:
-             pred = post_spikes.sum(dim = 0).argmax()
 
-        if label is not None:   
-            if pred is None: 
-                 pred = torch.tensor(0, device=device)
-            
-            # Fix 2.4: Stronger reward/punishment
-            if pred == label:
-                reward = 1.0 
-                # Keep use_stdp = True to reinforce!
-            else:
-                reward = -0.5
-                # Punish!
-            
+        post_spikes = (self.v >= self.v_th).float()
+
+        # Lateral inhibition (competition)
         global_activity = post_spikes.sum(dim=1, keepdim=True)
-        self.v = self.v - self.lateral_strength * global_activity
-        
+        self.v -= self.lateral_strength * global_activity
+
+        # Eligibility trace update (core fix)
         trace_decay = torch.exp(torch.tensor(-self.dt / self.tau_trace, device=device))
-        self.pre_trace = trace_decay * self.pre_trace + pre_spikes
-        self.post_trace = trace_decay * self.post_trace + post_spikes
-        
-        self.v = self.v * (1.0 - post_spikes)
+        self.eligibility *= trace_decay
+        self.eligibility += pre_spikes.unsqueeze(2) * post_spikes.unsqueeze(1)
+
+        # Reset membrane after spike
+        self.v *= (1.0 - post_spikes)
+
         return post_spikes
+
+    @torch.no_grad()
+    def stdp_update(self, pre_activity, winner, reward):
+        """
+        Signature preserved but internally uses eligibility traces.
+        Called once per sequence by ReservoirSTDPReadout.
+        """
+        if isinstance(reward, float) or reward.dim() == 0:
+            reward = reward * torch.ones(
+                self.eligibility.shape[0], device=self.eligibility.device
+            )
+
+        # Reward-gated eligibility update
+        dW = self.learning_rate * torch.mean(
+            reward.view(-1, 1, 1) * self.eligibility, dim=0
+        )
+
+        self.W += dW
+        self.W.clamp_(self.w_min, self.w_max)
 
 
 class LIFReservoir(nn.Module):
