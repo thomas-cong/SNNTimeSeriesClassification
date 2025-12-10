@@ -44,12 +44,10 @@ class STDPLayer(nn.Module):
     def __init__(self, n_pre, n_classes,
                  tau_mem=50e-3,
                  tau_trace=50e-3,
-                 v_th=0.5,
+                 v_th=0.3,
                  dt=1e-2,
-                 a_plus=0.1,     # kept for compatibility
-                 a_minus=0.12,   # kept for compatibility
-                 learning_rate=1e-3,
-                 lateral_strength=0.1,
+                 learning_rate=1e-2,
+                 lateral_strength=0.05,
                  w_max=1.0,
                  w_min=-1.0):
         super().__init__()
@@ -96,11 +94,15 @@ class STDPLayer(nn.Module):
         decay = torch.exp(torch.tensor(-self.dt / self.tau_mem, device=device))
         self.v = decay * self.v + (1 - decay) * I
 
-        post_spikes = (self.v >= self.v_th).float()
+        raw_spikes = (self.v >= self.v_th).float()
 
-        # Lateral inhibition (competition)
-        global_activity = post_spikes.sum(dim=1, keepdim=True)
-        self.v -= self.lateral_strength * global_activity
+        # Winner-take-all competition
+        if raw_spikes.sum() > 1:
+            winner = torch.argmax(self.v, dim=1)
+            post_spikes = torch.zeros_like(raw_spikes)
+            post_spikes[0, winner] = 1.0
+        else:
+            post_spikes = raw_spikes
 
         # Eligibility trace update (core fix)
         trace_decay = torch.exp(torch.tensor(-self.dt / self.tau_trace, device=device))
@@ -113,23 +115,33 @@ class STDPLayer(nn.Module):
         return post_spikes
 
     @torch.no_grad()
-    def stdp_update(self, pre_activity, winner, reward):
-        """
-        Signature preserved but internally uses eligibility traces.
-        Called once per sequence by ReservoirSTDPReadout.
-        """
+    def stdp_update(self, pre_activity, winner_mask, reward):
+
         if isinstance(reward, float) or reward.dim() == 0:
             reward = reward * torch.ones(
                 self.eligibility.shape[0], device=self.eligibility.device
             )
 
-        # Reward-gated eligibility update
-        dW = self.learning_rate * torch.mean(
-            reward.view(-1, 1, 1) * self.eligibility, dim=0
-        )
+        # winner_mask: (B, n_classes)
+        # eligibility:  (B, n_pre, n_classes)
+
+        if winner_mask is not None:
+            # --- 1. Winner-only LTP ---
+            masked_eligibility = self.eligibility * winner_mask.unsqueeze(1)
+
+            dW = self.learning_rate * torch.mean(
+                reward.view(-1, 1, 1) * masked_eligibility,
+                dim=0
+            )
+        else:
+            # No competition — pure reward STDP (not recommended)
+            dW = self.learning_rate * torch.mean(
+                reward.view(-1, 1, 1) * self.eligibility, dim=0
+            )
 
         self.W += dW
         self.W.clamp_(self.w_min, self.w_max)
+
 
 
 class LIFReservoir(nn.Module):

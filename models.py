@@ -75,57 +75,62 @@ class ReservoirClassifier(nn.Module):
         predicted = self.classifier(post_spike)
         return predicted
 class ReservoirSTDPReadout(nn.Module):
-    def __init__(self, classes, reservoir, n_voters=10, data_channels=1):
+    def __init__(self, classes, reservoir, n_voters=1, data_channels=1):
         super().__init__()
         self.reservoir = reservoir
-        self.classifiers = nn.ModuleList(
-            [STDPLayer(reservoir.n_reservoir, classes) for _ in range(n_voters)]
-        )
+        self.classifiers = nn.ModuleList([
+            STDPLayer(reservoir.n_reservoir, classes) for _ in range(n_voters)
+        ])
 
     def forward(self, x, labels=None, reservoir_stdp=False, classifier_stdp=False):
         """
+        x: (B, C, T)
+        labels: (B,) or None
         Returns:
-            spike_counts: (B, classes)
+            spike_counts: (B, n_classes)
             reservoir_spikes_accum: (B, n_reservoir)
         """
         B, C, T = x.shape
         device = x.device
 
-        spike_counts = torch.zeros(
-            B, self.classifiers[0].n_classes, device=device
-        )
-        reservoir_spikes_accum = torch.zeros(
-            B, self.reservoir.n_reservoir, device=device
-        )
+        spike_counts = torch.zeros(B, self.classifiers[0].n_classes, device=device)
+        reservoir_spikes_accum = torch.zeros(B, self.reservoir.n_reservoir, device=device)
 
-        # Reset states
-        self.reservoir.v = None
-        self.reservoir.prev_spikes = None
-        for clf in self.classifiers:
-            clf.v = None
-            clf.eligibility = None
-
-        # Run full sequence
+        # Run through time
         for t in range(T):
-            x_t = x[:, :, t]
-            reservoir_spike = self.reservoir(x_t, use_stdp=reservoir_stdp)
-            reservoir_spikes_accum += reservoir_spike
+            x_t = x[:, :, t]        # (B, C)
+            res_spike = self.reservoir(x_t, use_stdp=reservoir_stdp)  # (B, N)
+            reservoir_spikes_accum += res_spike
 
-            for classifier in self.classifiers:
-                classifier_spike = classifier(reservoir_spike, labels, use_stdp=False)
-                spike_counts += classifier_spike
+            for clf in self.classifiers:
+                clf_spike = clf(res_spike, label=None, use_stdp=False)  # (B, n_classes)
+                spike_counts += clf_spike
 
-        # Apply reward-gated STDP ONCE per sequence
-        if classifier_stdp and labels is not None:
-            pred = spike_counts.argmax(dim=1)
-            reward = torch.where(
-                pred == labels,
-                torch.ones_like(labels, dtype=torch.float),
-                -torch.ones_like(labels, dtype=torch.float),
-            )
+        # STDP update for readout (sequence-level)
+        if classifier_stdp:
+            # Prediction from spike counts
+            pred = spike_counts.argmax(dim=1)  # (B,)
 
-            for classifier in self.classifiers:
-                classifier.stdp_update(None, None, reward)
+            # Reward: +1 for correct, -0.1 for incorrect
+            if labels is not None:
+                reward = torch.where(
+                    pred == labels,
+                    torch.ones_like(labels, dtype=torch.float, device=device),
+                    -0.1 * torch.ones_like(labels, dtype=torch.float, device=device)
+                )
+            else:
+                reward = torch.ones(B, device=device)
+
+            # Winner mask: one-hot over classes
+            winner_mask = torch.zeros(B, self.classifiers[0].n_classes, device=device)
+            winner_mask[torch.arange(B), pred] = 1.0  # (B, n_classes)
+
+            # Call stdp_update on each classifier
+            for clf in self.classifiers:
+                clf.stdp_update(
+                    pre_activity=None,           # unused in your STDPLayer
+                    winner_mask=winner_mask,     # (B, n_classes)
+                    reward=reward                # (B,)
+                )
 
         return spike_counts, reservoir_spikes_accum
-
