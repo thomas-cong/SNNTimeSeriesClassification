@@ -9,20 +9,20 @@ import numpy as np
 from argparse import Namespace
 from tqdm import tqdm
 
-sys.path.insert(0, '/home/tcong13/949Final')
+sys.path.insert(0, '/path/to/project')
 
-reservoir_path = "/home/tcong13/949Final/models/200_fixed_reservoir.pt"
+reservoir_path = "/path/to/project/models/200_fixed_reservoir.pt"
 def get_dataset(args):
     if args.dataset == "heartbeat":
         from BinaryHeartBeatDataset import BinaryHeartBeatDataset
-        train_data = BinaryHeartBeatDataset("/home/tcong13/949Final/Binary Heartbeat/BinaryHeartbeat_TRAIN.arff")
-        test_data = BinaryHeartBeatDataset("/home/tcong13/949Final/Binary Heartbeat/BinaryHeartbeat_TEST.arff")
+        train_data = BinaryHeartBeatDataset("/path/to/project/Binary Heartbeat/BinaryHeartbeat_TRAIN.arff")
+        test_data = BinaryHeartBeatDataset("/path/to/project/Binary Heartbeat/BinaryHeartbeat_TEST.arff")
         args.seq_len = train_data[0][0].shape[0]
         args.classes = 2
     elif args.dataset == "twopattern":
         from TwoPatternsDataset import TwoPatternsDataset
-        train_data = TwoPatternsDataset("/home/tcong13/949Final/TwoPatterns/TwoPatterns_TRAIN.tsv")
-        test_data = TwoPatternsDataset("/home/tcong13/949Final/TwoPatterns/TwoPatterns_TEST.tsv")
+        train_data = TwoPatternsDataset("/path/to/project/TwoPatterns/TwoPatterns_TRAIN.tsv")
+        test_data = TwoPatternsDataset("/path/to/project/TwoPatterns/TwoPatterns_TEST.tsv")
         args.seq_len = train_data[0][0].shape[1]
         args.classes = 4
     else:
@@ -145,7 +145,7 @@ def main():
     
     plt.suptitle('Spike Rasters by Class', fontsize=14, fontweight='bold')
     plt.tight_layout()
-    plt.savefig('/home/tcong13/949Final/vis/random_spike_raster.png', dpi=300)
+    plt.savefig('/path/to/project/vis/random_spike_raster.png', dpi=300)
     plt.show()
     
     # Train logistic classifier to test separability

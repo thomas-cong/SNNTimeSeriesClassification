@@ -60,14 +60,14 @@ def save_reservoir(reservoir, path):
 def get_dataset(args):
     if args.dataset == "heartbeat":
         from BinaryHeartBeatDataset import BinaryHeartBeatDataset
-        train_data = BinaryHeartBeatDataset("/home/tcong13/949Final/Binary Heartbeat/BinaryHeartbeat_TRAIN.arff")
-        test_data = BinaryHeartBeatDataset("/home/tcong13/949Final/Binary Heartbeat/BinaryHeartbeat_TEST.arff")
+        train_data = BinaryHeartBeatDataset("/path/to/data/Binary Heartbeat/BinaryHeartbeat_TRAIN.arff")
+        test_data = BinaryHeartBeatDataset("/path/to/data/Binary Heartbeat/BinaryHeartbeat_TEST.arff")
         args.seq_len = train_data[0][0].shape[0]
         args.classes = 2
     elif args.dataset == "twopattern":
         from TwoPatternsDataset import TwoPatternsDataset
-        train_data = TwoPatternsDataset("/home/tcong13/949Final/TwoPatterns/TwoPatterns_TRAIN.tsv")
-        test_data = TwoPatternsDataset("/home/tcong13/949Final/TwoPatterns/TwoPatterns_TEST.tsv")
+        train_data = TwoPatternsDataset("/path/to/data/TwoPatterns/TwoPatterns_TRAIN.tsv")
+        test_data = TwoPatternsDataset("/path/to/data/TwoPatterns/TwoPatterns_TEST.tsv")
         args.seq_len = train_data[0][0].shape[1]
         args.classes = 4
     else:

@@ -14,6 +14,7 @@ class MLPClassifier(nn.Module):
             nn.Linear(256, 128),
             nn.ReLU(),
             nn.Linear(128, 64),
+            nn.ReLU()
             nn.Linear(64, classes)
         )
     def forward(self, x):

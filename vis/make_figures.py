@@ -46,10 +46,10 @@ def main():
             total_ops["SYNOPS"] = synops
         
         return total_ops
-    t_ops = get_energy_usage("/home/tcong13/949Final/results/TransformerOutput.txt")
-    m_ops = get_energy_usage("/home/tcong13/949Final/results/MLPOutput.txt")
-    l_stat_ops = get_energy_usage("/home/tcong13/949Final/results/LIFStaticOutput.txt")
-    l_stdp_ops = get_energy_usage("/home/tcong13/949Final/results/LIFSTDPOutput.txt")
+    t_ops = get_energy_usage("./results/results/TransformerOutput.txt")
+    m_ops = get_energy_usage("./results/results/MLPOutput.txt")
+    l_stat_ops = get_energy_usage("./results/results/LIFStaticOutput.txt")
+    l_stdp_ops = get_energy_usage("./results/results/LIFSTDPOutput.txt")
     
     # Create energy usage DataFrame
     energy_data = {
@@ -86,14 +86,14 @@ def main():
     
     plt.suptitle('Energy Usage: Operation Type Distribution per Model', fontsize=14, fontweight='bold')
     plt.tight_layout()
-    plt.savefig("/home/tcong13/949Final/vis/energy_usage_pie_charts.png", dpi=300, bbox_inches='tight')
+    plt.savefig("./results/vis/energy_usage_pie_charts.png", dpi=300, bbox_inches='tight')
     plt.show()
     
     # Parse all files
-    t_epochs, t_losses = parse_epoch_loss("/home/tcong13/949Final/results/TransformerOutput.txt")
-    m_epochs, m_losses = parse_epoch_loss("/home/tcong13/949Final/results/MLPOutput.txt")
-    l_stat_epochs, l_stat_losses = parse_epoch_loss("/home/tcong13/949Final/results/LIFStaticOutput.txt")
-    l_stdp_epochs, l_stdp_losses = parse_epoch_loss("/home/tcong13/949Final/results/LIFSTDPOutput.txt")
+    t_epochs, t_losses = parse_epoch_loss("./results/results/TransformerOutput.txt")
+    m_epochs, m_losses = parse_epoch_loss("./results/results/MLPOutput.txt")
+    l_stat_epochs, l_stat_losses = parse_epoch_loss("./results/results/LIFStaticOutput.txt")
+    l_stdp_epochs, l_stdp_losses = parse_epoch_loss("./results/results/LIFSTDPOutput.txt")
     # Create DataFrame
     t_df = pd.DataFrame({
         'epoch': t_epochs,
@@ -115,10 +115,10 @@ def main():
     })
         
     # Optional: Save to CSV
-    t_df.to_csv("/home/tcong13/949Final/vis/transformer_losses.csv", index=False)
-    m_df.to_csv("/home/tcong13/949Final/vis/mlp_losses.csv", index=False)
-    l_stat_df.to_csv("/home/tcong13/949Final/vis/lif_static_losses.csv", index=False)
-    l_stdp_df.to_csv("/home/tcong13/949Final/vis/lif_stdp_losses.csv", index=False)
+    t_df.to_csv("./results/vis/transformer_losses.csv", index=False)
+    m_df.to_csv("./results/vis/mlp_losses.csv", index=False)
+    l_stat_df.to_csv("./results/vis/lif_static_losses.csv", index=False)
+    l_stdp_df.to_csv("./results/vis/lif_stdp_losses.csv", index=False)
     
     df_dict = {"transformer": t_df, "MLP": m_df, "Static Reservoir (MLP Readout)": l_stat_df, "STDP Reservoir (MLP Readout) ": l_stdp_df}
     # Optional: Create a simple plot
@@ -130,7 +130,7 @@ def main():
             plt.ylabel('Loss')
             plt.title(f'Training Loss - {model_type.capitalize()}')
             plt.grid(True)
-            plt.savefig(f"/home/tcong13/949Final/vis/loss_plot_{model_type}.png")
+            plt.savefig(f"./results/vis/loss_plot_{model_type}.png")
             plt.show()
         joint_df = pd.DataFrame()
         for model_type, df in df_dict.items():
@@ -149,11 +149,11 @@ def main():
         plt.legend(fontsize=10)
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
-        plt.savefig("/home/tcong13/949Final/vis/joint_loss_plot.png", dpi=300, bbox_inches='tight')
+        plt.savefig("./results/vis/joint_loss_plot.png", dpi=300, bbox_inches='tight')
         plt.show()
         
         # Also save joint data
-        joint_df.to_csv("/home/tcong13/949Final/vis/joint_losses.csv", index=False) 
+        joint_df.to_csv("./results/vis/joint_losses.csv", index=False) 
 if __name__ == "__main__":
     main()
     main()

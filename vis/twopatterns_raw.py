@@ -1,11 +1,11 @@
 import sys
-sys.path.insert(0, '/home/tcong13/949Final')
+sys.path.insert(0, '/path/to/project')
 
 import matplotlib.pyplot as plt
 from TwoPatternsDataset import TwoPatternsDataset
 
 def main():
-    train_data = TwoPatternsDataset("/home/tcong13/949Final/TwoPatterns/TwoPatterns_TRAIN.tsv")
+    train_data = TwoPatternsDataset("/path/to/project/TwoPatterns/TwoPatterns_TRAIN.tsv")
     
     unique_classes = sorted(set(y.item() if hasattr(y, 'item') else y for _, y in train_data))
     high_contrast_colors = ['#FF0000', '#0000FF', '#00CC00', '#FF8000']
@@ -30,7 +30,7 @@ def main():
     
     plt.suptitle('TwoPatterns Raw Data Samples', fontsize=14, fontweight='bold')
     plt.tight_layout()
-    plt.savefig('/home/tcong13/949Final/vis/twopatterns_raw.png', dpi=300)
+    plt.savefig('/path/to/project/vis/twopatterns_raw.png', dpi=300)
     plt.show()
 
 if __name__ == "__main__":

@@ -24,7 +24,7 @@ class BinaryHeartBeatDataset(Dataset):
 
 if __name__ == "__main__":
     from torch.utils.data import DataLoader
-    arff_path = "/home/tcong13/949Final/Binary Heartbeat/BinaryHeartbeat_TRAIN.arff"
+    arff_path = "path"
     training_data = BinaryHeartBeatDataset(arff_path)
     training_loader = DataLoader(training_data)
     feature, label = next(iter(training_loader))

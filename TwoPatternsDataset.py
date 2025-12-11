@@ -16,7 +16,7 @@ class TwoPatternsDataset(Dataset):
 
 if __name__ == "__main__":
     from torch.utils.data import DataLoader
-    training_data = TwoPatternsDataset("/home/tcong13/949Final/TwoPatterns/TwoPatterns_TRAIN.tsv")
+    training_data = TwoPatternsDataset("./TwoPatterns/TwoPatterns_TRAIN.tsv")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     train_dataloader = DataLoader(training_data)

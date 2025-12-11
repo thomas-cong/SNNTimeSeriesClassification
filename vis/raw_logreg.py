@@ -1,5 +1,5 @@
 import sys
-sys.path.insert(0, '/home/tcong13/949Final')
+sys.path.insert(0, '/path/to/project')
 
 import numpy as np
 from sklearn.linear_model import LogisticRegression
@@ -7,8 +7,8 @@ from sklearn.metrics import accuracy_score, classification_report
 from TwoPatternsDataset import TwoPatternsDataset
 
 def main():
-    train_data = TwoPatternsDataset("/home/tcong13/949Final/TwoPatterns/TwoPatterns_TRAIN.tsv")
-    test_data = TwoPatternsDataset("/home/tcong13/949Final/TwoPatterns/TwoPatterns_TEST.tsv")
+    train_data = TwoPatternsDataset("/path/to/project/TwoPatterns/TwoPatterns_TRAIN.tsv")
+    test_data = TwoPatternsDataset("/path/to/project/TwoPatterns/TwoPatterns_TEST.tsv")
     
     train_X = np.array([x.squeeze().numpy() for x, _ in train_data])
     train_y = np.array([y.item() if hasattr(y, 'item') else y for _, y in train_data])
